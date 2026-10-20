@@ -650,8 +650,13 @@ def verify_password(password: str, salt: str, expected_hash: str) -> bool:
 
 
 def mask_secrets(text: str) -> str:
-    """Che mật khẩu nhúng trong URL (rtsp://user:pass@host -> rtsp://***:***@host)."""
-    return re.sub(r"([a-zA-Z][a-zA-Z0-9+.-]*://)([^@/\s]+)@", r"\1***:***@", text or "")
+    """Che thông tin đăng nhập nhúng trong URL RTSP/HTTP."""
+    text = re.sub(r"([a-zA-Z][a-zA-Z0-9+.-]*://)([^@/\s]+)@", r"\1***:***@", text or "")
+    return re.sub(
+        r"([a-zA-Z][a-zA-Z0-9+.-]*://[^/\s]+/user:)[^;/\s]+(;pwd:)[^/\s?#]+",
+        r"\1***\2***",
+        text,
+    )
 
 
 def get_user(username: str) -> Optional[sqlite3.Row]:
@@ -1452,6 +1457,7 @@ def _onvif_guess_brand(*parts) -> str:
         (("amcrest",), "amcrest"),
         (("imou", "dahua", "kbvision", "kb vision"), "imou"),
         (("hikvision", "ezviz", "hilook", "annke"), "ezviz"),
+        (("hanet",), "hanet"),
         (("tapo", "tp-link", "tp link"), "tapo"),
         (("yoosee",), "yoosee"),
         (("xiaomi", "thingino", "yi "), "xiaomi"),

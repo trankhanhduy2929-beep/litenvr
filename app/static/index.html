@@ -1341,6 +1341,17 @@
       gap: 10px;
     }
 
+    .grid-2 > .form-row {
+      min-width: 0;
+    }
+
+    .grid-2 > .form-row > input,
+    .grid-2 > .form-row > select {
+      width: 100%;
+      min-width: 0;
+      max-width: 100%;
+    }
+
     .cam-item, .user-row {
       display: flex;
       justify-content: space-between;
@@ -1477,6 +1488,75 @@
     .log-line.error .lv { color: var(--err-text); }
     .log-line .cid { color: var(--lime-text); flex: none; }
     .log-empty { color: var(--text-dim); text-align: center; padding: 24px; }
+
+    .cam-method-tabs {
+      display: flex;
+      gap: 18px;
+      margin-bottom: 14px;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+
+    .cam-method-tabs [role="tab"] {
+      position: relative;
+      flex: 1 1 0;
+      min-width: max-content;
+      min-height: 38px;
+      padding: 8px 2px 10px;
+      border: 0;
+      border-radius: 0;
+      background: transparent;
+      color: var(--text-muted);
+      font-size: 13.5px;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+
+    .cam-method-tabs [role="tab"]:hover {
+      background: transparent;
+      color: var(--text-main);
+    }
+
+    .cam-method-tabs [role="tab"][aria-selected="true"] { color: var(--text-main); }
+
+    .cam-method-tabs [role="tab"][aria-selected="true"]::after {
+      content: "";
+      position: absolute;
+      right: 0;
+      bottom: 0;
+      left: 0;
+      height: 2px;
+      border-radius: 2px;
+      background: var(--accent);
+    }
+
+    .cam-method-panel[hidden] { display: none; }
+
+    .onvif-autoopts {
+      margin-bottom: 10px;
+      padding: 10px;
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-sm);
+      background: var(--bg-elevated);
+    }
+
+    .onvif-autoopts-title {
+      margin-bottom: 8px;
+      color: var(--text-muted);
+      font-size: 12px;
+      font-weight: 600;
+    }
+
+    .onvif-autoopts .form-row { margin-bottom: 8px; }
+    .onvif-autoopts .grid-2 { gap: 8px; }
+
+    .manual-bulk-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 10px;
+      flex-wrap: wrap;
+    }
 
     .onvif-box {
       background: var(--bg-elevated);
@@ -1728,6 +1808,11 @@
       .evt-detail-img { max-height: 42vh; }
       .evt-detail-actions button { flex: 1 1 calc(50% - 4px); }
       .evt-detail-actions .primary { flex-basis: 100%; margin-right: 0; }
+    }
+
+    @media (max-width: 360px) {
+      .cam-method-tabs { gap: 8px; }
+      .cam-method-tabs [role="tab"] { font-size: 12.5px; }
     }
 
     @media (prefers-reduced-motion: reduce) {
@@ -2002,10 +2087,15 @@
       <h3 style="margin-top:0">Quản lý &amp; Thêm Camera Đa Hãng</h3>
       <div id="camListBox" style="margin-bottom:14px;"></div>
 
+      <div class="cam-method-tabs" role="tablist" aria-label="Phương thức thêm camera">
+        <button type="button" id="tabOnvif" role="tab" aria-selected="true" aria-controls="paneOnvif" tabindex="0" onclick="setCamMethod('onvif')" onkeydown="camMethodKey(event)">Tự động dò ONVIF</button>
+        <button type="button" id="tabManual" role="tab" aria-selected="false" aria-controls="paneManual" tabindex="-1" onclick="setCamMethod('manual')" onkeydown="camMethodKey(event)">Nhập URL thủ công</button>
+      </div>
+
+      <div id="paneOnvif" class="cam-method-panel" role="tabpanel" aria-labelledby="tabOnvif" tabindex="0">
       <div class="onvif-actions">
         <button type="button" id="btnOnvifDiscover" onclick="onvifDiscover()">🔎 Dò camera ONVIF</button>
         <button type="button" id="btnOnvifScan" onclick="onvifScan()">🌐 Quét dải IP</button>
-        <button type="button" onclick="toggleBulk()">➕ Thêm hàng loạt</button>
       </div>
       <div class="onvif-scan-row">
         <label for="onvifSubnet">Dải IP</label>
@@ -2026,6 +2116,43 @@
         <input id="onvifIp" placeholder="Hoặc nhập IP ONVIF (VD: 192.168.1.10)" style="flex:1;">
         <button onclick="onvifProbe(document.getElementById('onvifIp').value.trim())">Lấy luồng RTSP</button>
       </div>
+      <div class="onvif-autoopts">
+        <div class="onvif-autoopts-title">Áp dụng khi thêm camera tự động</div>
+        <div class="grid-2">
+          <div class="form-row">
+            <label for="onvifRecordMode">Chế độ ghi hình:</label>
+            <select id="onvifRecordMode">
+              <option value="continuous">Lưu liên tục 24/7</option>
+              <option value="motion">Chỉ lưu khi có chuyển động (HASS)</option>
+              <option value="off">Chỉ xem trực tiếp (Không lưu)</option>
+            </select>
+          </div>
+          <div class="form-row">
+            <label for="onvifStorageTarget">Nơi lưu bản ghi:</label>
+            <select id="onvifStorageTarget">
+              <option value="both">Cả hai (ổ cứng + Google Drive)</option>
+              <option value="hdd">Chỉ ổ cứng</option>
+              <option value="drive">Chỉ Google Drive</option>
+            </select>
+          </div>
+          <div class="form-row">
+            <label for="onvifRoom">Nhóm / Phòng:</label>
+            <input id="onvifRoom" placeholder="VD: Tầng 1, Sân vườn">
+          </div>
+          <div class="form-row">
+            <label for="onvifTags">Nhãn (cách nhau dấu phẩy):</label>
+            <input id="onvifTags" placeholder="VD: ngoài trời, cổng">
+          </div>
+        </div>
+        <div class="onvif-hint">Có thể chỉnh lịch ghi, cảm biến và codec sau khi thêm trong danh sách camera.</div>
+      </div>
+      </div>
+
+      <div id="paneManual" class="cam-method-panel" role="tabpanel" aria-labelledby="tabManual" tabindex="0" hidden>
+      <div class="manual-bulk-row">
+        <span class="onvif-hint">Dán nhiều camera cùng lúc nếu đã có sẵn URL RTSP.</span>
+        <button type="button" onclick="toggleBulk()">➕ Thêm hàng loạt</button>
+      </div>
       <div id="bulkBox" style="display:none; margin-bottom:10px;">
         <div class="form-row">
           <label>Mỗi dòng: mã | tên | rtsp_url | sub_url (tùy chọn)</label>
@@ -2042,6 +2169,7 @@
             <option value="onvif">ONVIF / Hãng khác (giữ URL hiện có)</option>
             <option value="imou">Imou / Dahua / KBVision</option>
             <option value="ezviz">Ezviz / Hikvision / HiLook / Annke</option>
+            <option value="hanet">Hanet (user:...;pwd:...)</option>
             <option value="tapo">TP-Link Tapo / Vigigi</option>
             <option value="yoosee">Yoosee (onvif1 / onvif2)</option>
             <option value="xiaomi">Xiaomi / Yi / Thingino</option>
@@ -2169,10 +2297,11 @@
         <button type="button" class="warn" onclick="loadHassSensors()">↻ Tải danh sách sensor từ HA</button>
         <span id="camHassMsg" style="font-size:12px;color:var(--text-muted);"></span>
       </div>
+      </div>
 
       <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:14px;">
         <button onclick="closeCamModal()">Đóng</button>
-        <button class="primary" onclick="saveCamera()">Lưu Camera</button>
+        <button class="primary" id="btnSaveCamera" onclick="saveCamera()" hidden>Lưu Camera</button>
       </div>
     </div>
   </div>
@@ -2943,8 +3072,11 @@
         main = `rtsp://${u}:${p}@${ip}:554/cam/realmonitor?channel=1&subtype=0`;
         sub  = `rtsp://${u}:${p}@${ip}:554/cam/realmonitor?channel=1&subtype=1`;
       } else if (brand === "ezviz") {
-        main = `rtsp://${u}:${p}@${ip}:554/Streaming/Channels/101`;
-        sub  = `rtsp://${u}:${p}@${ip}:554/Streaming/Channels/102`;
+        main = `rtsp://${u}:${p}@${ip}:554/h264/ch01/main/av_stream`;
+        sub  = `rtsp://${u}:${p}@${ip}:554/h264/ch01/sub/av_stream`;
+      } else if (brand === "hanet") {
+        main = `rtsp://${ip}:554/user:${u};pwd:${p}`;
+        sub  = "";
       } else if (brand === "tapo") {
         main = `rtsp://${u}:${p}@${ip}:554/stream1`;
         sub  = `rtsp://${u}:${p}@${ip}:554/stream2`;
@@ -2988,6 +3120,33 @@
       }
     }
 
+    function setCamMethod(method, focusTab) {
+      const onvif = method !== "manual";
+      const tabOnvif = document.getElementById("tabOnvif");
+      const tabManual = document.getElementById("tabManual");
+      const paneOnvif = document.getElementById("paneOnvif");
+      const paneManual = document.getElementById("paneManual");
+      if (!tabOnvif || !tabManual || !paneOnvif || !paneManual) return;
+      tabOnvif.setAttribute("aria-selected", onvif ? "true" : "false");
+      tabManual.setAttribute("aria-selected", onvif ? "false" : "true");
+      tabOnvif.tabIndex = onvif ? 0 : -1;
+      tabManual.tabIndex = onvif ? -1 : 0;
+      paneOnvif.hidden = !onvif;
+      paneManual.hidden = onvif;
+      const save = document.getElementById("btnSaveCamera");
+      if (save) save.hidden = onvif;
+      if (focusTab) (onvif ? tabOnvif : tabManual).focus();
+    }
+
+    function camMethodKey(e) {
+      if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) return;
+      e.preventDefault();
+      let method = e.currentTarget.id === "tabOnvif" ? "manual" : "onvif";
+      if (e.key === "Home") method = "onvif";
+      if (e.key === "End") method = "manual";
+      setCamMethod(method, true);
+    }
+
     function openCamModal() {
       renderCamList();
       updateStorageHint();
@@ -2996,6 +3155,7 @@
       const subnet = document.getElementById("onvifSubnet");
       if (subnet && !subnet.value.trim()) subnet.value = guessOnvifSubnet();
       onvifReset();
+      setCamMethod("onvif");
       document.getElementById("camModal").classList.add("open");
     }
     function closeCamModal() { document.getElementById("camModal").classList.remove("open"); }
@@ -3026,6 +3186,7 @@
       hrows.innerHTML = "";
       (c.hass_entities || []).forEach(ent => addCamHassRow(ent));
       ensureHassSensors();
+      setCamMethod("manual");
     }
 
     let hassSensors = [];
@@ -3502,6 +3663,7 @@
         if (!document.getElementById("inpCamId").value) document.getElementById("inpCamId").value = ("cam_" + host.replace(/\./g, "_"));
         const brandSel = document.getElementById("inpBrand");
         if (d.brand && [...brandSel.options].some(o => o.value === d.brand)) brandSel.value = d.brand;
+        setCamMethod("manual");
         onvifSetMsg(`Đã lấy luồng từ ${d.name || host}. Kiểm tra rồi bấm "Lưu Camera".`, "ok");
         if (globalThis.__clientLog) __clientLog("info", "ONVIF probe OK: " + (d.name || host));
       } catch (e) {
@@ -3527,10 +3689,10 @@
             devices: selected.map(d => ({host: d.ip || d.host, port: Number(d.port) || 80, xaddr: d.xaddr || "", name: d.name || ""})),
             username: document.getElementById("onvifUser").value.trim(),
             password: document.getElementById("onvifPass").value,
-            record_mode: document.getElementById("inpRecordMode").value,
-            storage_target: document.getElementById("inpStorageTarget").value,
-            room: document.getElementById("inpRoom").value.trim(),
-            tags: document.getElementById("inpTags").value.trim()
+            record_mode: document.getElementById("onvifRecordMode").value,
+            storage_target: document.getElementById("onvifStorageTarget").value,
+            room: document.getElementById("onvifRoom").value.trim(),
+            tags: document.getElementById("onvifTags").value.trim()
           })
         });
         let d = {};

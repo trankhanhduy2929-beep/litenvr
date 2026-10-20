@@ -70,8 +70,13 @@ Nguyên nhân phổ biến: camera dùng **H.265/HEVC** — trình duyệt (Chro
 **Hình bị "vỡ"/rác khi xem qua go2rtc/restream:** thường do luồng H.264 ở profile/màu mà trình duyệt không giải mã (High 4:2:2, 4:4:4, 10-bit). LiteNVR tự dò `profile` + `pix_fmt`; nếu không phải H.264 8-bit 4:2:0 (`yuv420p`/`yuvj420p`) sẽ tự chuyển mã sang H.264 chuẩn. Có thể ép thủ công bằng **Codec video = Luôn chuyển sang H.264**. Ngoài ra LiteNVR ưu tiên TCP (`prefer_tcp`) để tránh mất gói.
 
 ## Thêm camera & nhiều giao thức
-- **ONVIF tự động**: **+ Quản lý Camera** → **🔎 Tìm camera ONVIF** → chọn thiết bị → nhập tài khoản ONVIF → LiteNVR tự lấy **URL RTSP main + sub**. Hoạt động với hầu hết camera (Dahua/Imou, Hikvision/EZVIZ, Tapo, Hanet… bật ONVIF). Nếu tìm không thấy (Docker bridge chặn multicast), nhập thẳng **IP camera** vào ô bên dưới rồi bấm **Lấy luồng RTSP**.
-- **Thêm hàng loạt**: **➕ Thêm hàng loạt**, mỗi dòng một camera: `mã | tên | rtsp_url | sub_url (tùy chọn)`.
+- **Hai phương thức trong Quản lý Camera**:
+  - **Tự động dò ONVIF**: bấm **🔎 Dò camera ONVIF** → chọn thiết bị → nhập tài khoản ONVIF → LiteNVR tự lấy **URL RTSP main + sub**. Hoạt động với hầu hết camera (Dahua/Imou, Hikvision/EZVIZ, Hanet, Tapo… bật ONVIF). Nếu multicast bị chặn, nhập dải IP rồi **Quét dải IP**, hoặc nhập thẳng IP vào ô ONVIF và bấm **Lấy luồng RTSP**.
+  - **Nhập URL thủ công**: chọn hãng để tạo nhanh URL hoặc dán URL có sẵn; kiểm tra luồng rồi lưu. Mẫu preset:
+    - Imou/Dahua: `rtsp://user:pass@ip:554/cam/realmonitor?channel=1&subtype=0`
+    - EZVIZ/Hikvision: `rtsp://user:pass@ip:554/h264/ch01/main/av_stream`
+    - Hanet: `rtsp://ip:554/user:<user>;pwd:<pass>`
+- **Thêm hàng loạt**: trong tab **Nhập URL thủ công**, bấm **➕ Thêm hàng loạt**, mỗi dòng một camera: `mã | tên | rtsp_url | sub_url (tùy chọn)`.
 - **Giao thức đầu vào**: RTSP (mặc định), HTTP MJPEG/snapshot, RTMP, HLS(m3u8) — chỉ cần dán URL, tham số `rtsp_transport` chỉ áp dụng cho RTSP.
 - **Nhóm/Phòng và Nhãn**: điền khi thêm/sửa camera để phân loại; hiển thị trong danh sách và ô chọn nhanh.
 

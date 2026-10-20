@@ -532,6 +532,15 @@ class OnvifTests(_AppCase):
         self.assertEqual(dev["ip"], "192.168.5.8")
         self.assertEqual(dev["port"], 80)
         self.assertTrue(dev["xaddr"].endswith("/onvif/device_service"))
+        self.assertEqual(self.m._onvif_guess_brand("HANET", "IP Camera"), "hanet")
+        self.assertEqual(
+            self.m.mask_secrets("rtsp://admin:pw@192.168.5.9:554/live"),
+            "rtsp://***:***@192.168.5.9:554/live",
+        )
+        self.assertEqual(
+            self.m.mask_secrets("rtsp://192.168.5.184:554/user:admin;pwd:s3cret"),
+            "rtsp://192.168.5.184:554/user:***;pwd:***",
+        )
         hosts, label = self.m._parse_scan_targets("127.0.0.2/32")
         self.assertEqual(hosts, ["127.0.0.2"])
         self.assertEqual(label, "127.0.0.2/32")
