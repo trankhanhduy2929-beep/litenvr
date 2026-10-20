@@ -13,6 +13,11 @@ Mọi client cũ dùng **HTTP Basic Auth** (script, Home Assistant, ffmpeg/VLC, 
 
 Trang `/` và `/login` trả `Cache-Control: no-store` để trình duyệt không dùng bản cũ. Nếu đăng nhập đúng mật khẩu mà vẫn quay lại trang login: xoá cookie/phiên cũ cho trang này (hoặc Ctrl+F5); LiteNVR cũng tự xoá cookie phiên hỏng khi mở lại `/login` và **báo rõ** nếu trình duyệt chặn cookie (do iframe khác site) thay vì im lặng.
 
+## Hướng dẫn cài đặt trong ứng dụng
+Bấm nút **i** cạnh nút **⚙️ Cài đặt** để mở hướng dẫn ngay trong LiteNVR. Hộp thoại có hai tab:
+- **Home Assistant Add-on**: thêm kho add-on, cấu hình mật khẩu/cổng **3333**, lưu trữ, thêm camera, cập nhật và xử lý sự cố.
+- **Docker / Compose**: lệnh `docker run`, file Compose mẫu, biến môi trường, cổng **8080** (hoặc ánh xạ **9895**), HTTPS/reverse proxy, sao lưu và xử lý sự cố.
+
 ## Bảo mật & tài khoản con
 Bấm **🔐 Bảo mật** trên thanh công cụ:
 - **Tài khoản của tôi**: đổi mật khẩu, bật **2FA** (quét/nhập mã vào Google Authenticator, Authy… — sau khi bật, mỗi lần đăng nhập cần thêm mã 6 số).
@@ -33,7 +38,7 @@ Trên Web UI, bấm **🛰️ Home Assistant**:
 1. Nhập **Địa chỉ HA** (VD `http://homeassistant.local:8123`).
 2. Dán **Long-Lived Access Token** (HA → Hồ sơ người dùng → Security → Create Token). Token được lưu trong `config.json` và chỉ dùng ở phía server.
 3. Bấm **Kiểm tra kết nối** rồi **Lưu**.
-4. Gán cảm biến cho **từng camera** trong **+ Quản lý Camera** → **Sửa** → mục **🛰️ Cảm biến chuyển động Home Assistant**: bấm **↻ Tải danh sách sensor từ HA** để nạp cảm biến kèm trạng thái hiện tại, chọn cảm biến và **điều kiện kích hoạt** (VD `binary_sensor` → kích hoạt khi `on`; `device_tracker` → khi `home`; hoặc "mọi thay đổi trạng thái"). Danh sách lưu trong `hass_entities` của camera dưới dạng `{entity_id, state, label}`.
+4. Gán cảm biến cho **từng camera** trong **+ Quản lý Camera** → **Sửa** → mở **⚙️ Tùy chọn nâng cao** → mục **🛰️ Cảm biến chuyển động Home Assistant**: bấm **↻ Tải danh sách sensor từ HA** để nạp cảm biến kèm trạng thái hiện tại, chọn cảm biến và **điều kiện kích hoạt** (VD `binary_sensor` → kích hoạt khi `on`; `device_tracker` → khi `home`; hoặc "mọi thay đổi trạng thái"). Danh sách lưu trong `hass_entities` của camera dưới dạng `{entity_id, state, label}`.
 
 LiteNVR tự mở WebSocket tới HA (`/api/websocket`), xác thực bằng token, đăng ký `state_changed`; chỉ khi cảm biến **chuyển sang** giá trị kích hoạt mới ghi hình + snapshot cho camera tương ứng (cảm biến giữ nguyên trạng thái sẽ không kích hoạt lặp). Sự kiện ghi nhãn tuỳ chọn, mặc định `Chuyển động (HA: <entity_id>)`. Tự kết nối lại khi mất mạng.
 
@@ -51,7 +56,7 @@ Sự kiện AI đi đúng luồng cũ: kích hoạt ghi hình, lưu vào danh s�
 ## Xem Live / Bản ghi bị đen hoặc không phát
 Nguyên nhân phổ biến: camera dùng **H.265/HEVC** — trình duyệt (Chrome/Edge/Firefox) không giải mã được.
 - Mặc định LiteNVR dùng **Tự động phát hiện**: tự dò codec camera bằng `ffprobe`; nếu là H.265/HEVC sẽ tự chuyển sang H.264 cho cả Live (HLS) và khi phát bản ghi.
-- Muốn chỉnh tay: **+ Quản lý Camera** → sửa camera → **Codec video**:
+- Muốn chỉnh tay: **+ Quản lý Camera** → sửa camera → mở **⚙️ Tùy chọn nâng cao** → **Codec video**:
   - **Tự động phát hiện** (khuyến nghị).
   - **Copy**: nhẹ CPU nhất, chỉ dùng khi camera chắc chắn là H.264.
   - **Luôn chuyển sang H.264**: tương thích mọi trình duyệt, tốn CPU hơn.
@@ -90,7 +95,7 @@ Nguyên nhân phổ biến: camera dùng **H.265/HEVC** — trình duyệt (Chro
 - **Chụp snapshot có kiểm soát**: tối đa **2 ffmpeg chụp ảnh** chạy song song toàn hệ thống và **1 mỗi camera** (gộp yêu cầu trùng), tự dừng sau 12 giây nếu treo. Tránh dồn nhiều ffmpeg mở luồng cùng lúc khi có sự kiện chuyển động liên tục.
 - **Preset transcode nhẹ**: `ultrafast` + 2 luồng, `zerolatency`.
 - **Đệm Motion trong RAM**: tắt tuỳ chọn "Đệm chuyển động trong RAM" trong **⚙️ Lưu trữ** để ghi đệm ra đĩa nếu box ít RAM.
-- **HLS độ trễ thấp hơn**: live dùng cờ `independent_segments`; chỉnh độ trễ bằng biến môi trường `LIVE_HLS_TIME` (mặc định 2 giây, kẹp 1–10) và `LIVE_HLS_LIST` (số segment giữ trong playlist, mặc định 5, kẹp 2–20). Đặt `LIVE_HLS_TIME=1` để giảm độ trễ (tốn băng thông/CPU hơn).
+- **HLS độ trễ thấp**: live dùng segment **1 giây**, playlist **4 segment** và trình duyệt bắt đầu gần live edge; ffmpeg ép keyframe đúng nhịp segment khi phải chuyển mã. Đổi bằng `LIVE_HLS_TIME` (mặc định `1`, kẹp 1–10) và `LIVE_HLS_LIST` (mặc định `4`, kẹp 3–20). Mạng Wi-Fi yếu hoặc camera có GOP dài có thể tăng lên `LIVE_HLS_TIME=2`, `LIVE_HLS_LIST=5`; HLS vẫn có độ trễ nền khoảng 1–4 giây tuỳ camera. Nếu đặt sau reverse proxy, tắt proxy buffering cho `/hls/`.
 - **Thấy LiteNVR "ăn" ~2GB RAM?** Phần lớn thường là **bộ đệm file (page cache)** của Linux khi ghi/đọc video liên tục — nó hiện trong số RAM của container nhưng **tự nhả khi máy cần**, không phải rò rỉ. Mở **Dashboard** (hoặc `GET /api/system` → mục `memory`) để xem chi tiết: `app_rss_mb` (app), `children_mb` (ffmpeg/go2rtc), `cgroup_file_mb` (cache — bình thường), `cgroup_shmem_mb` (đệm RAM/HLS). Mỗi tiến trình con trong `children` có thêm `role` (camera/snapshot/playback), `cam_id`, `threads`, `age_sec` và `peak_rss_mb` để biết ffmpeg nào đang tốn RAM. Muốn hạ: dùng luồng phụ H.264 cho live, `GO2RTC=off/on` phù hợp, và tắt "Đệm chuyển động trong RAM" nếu cần.
 - Với box yếu hoặc camera giới hạn phiên: dùng **luồng phụ** cho live và/hoặc **restream go2rtc**.
 

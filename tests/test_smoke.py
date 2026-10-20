@@ -659,8 +659,19 @@ class BuilderTests(unittest.TestCase):
         flags = self._values(cmd, "-hls_flags")[0]
         self.assertIn("independent_segments", flags)
         self.assertIn("delete_segments", flags)
+        self.assertIn("temp_file", flags)
         self.assertEqual(self._values(cmd, "-hls_time"), [str(self.m.LIVE_HLS_TIME)])
         self.assertEqual(self._values(cmd, "-hls_list_size"), [str(self.m.LIVE_HLS_LIST)])
+        self.assertEqual(self._values(cmd, "-hls_delete_threshold"), ["1"])
+        self.assertEqual(self._values(cmd, "-hls_allow_cache"), ["0"])
+        self.assertLessEqual(self.m.LIVE_HLS_TIME, 1)
+        self.assertLessEqual(self.m.LIVE_HLS_LIST, 4)
+
+    def test_transcoded_live_forces_segment_keyframes(self):
+        cmd = self.m.build_ffmpeg_cmd("cam", self._cam(record_mode="copy", video_codec="h264"), include_live=True)
+        self.assertIn(f"n_forced*{self.m.LIVE_HLS_TIME}", self._values(cmd, "-force_key_frames")[0])
+        copy_cmd = self.m.build_ffmpeg_cmd("cam", self._cam(record_mode="copy", video_codec="copy"), include_live=True)
+        self.assertNotIn("-force_key_frames", copy_cmd)
 
     def test_hass_rules_merges_camera_entities(self):
         saved = self.m.CONFIG.get("cameras")

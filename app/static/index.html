@@ -15,8 +15,8 @@
       --border-subtle: rgba(255, 255, 255, 0.08);
       --border-hover: rgba(255, 255, 255, 0.18);
       --text-main: #f1f5f9;
-      --text-muted: #94a3b8;
-      --text-dim: #64748b;
+      --text-muted: #a8b5c8;
+      --text-dim: #8b9bb1;
       --ok-text: #34d399;
       --warn-text: #fbbf24;
       --err-text: #f87171;
@@ -25,13 +25,16 @@
       --accent: #3b82f6;
       --accent-strong: #1d4ed8;
       --accent-rgb: 59, 130, 246;
+      --accent-text: #93c5fd;
+      --on-accent: #ffffff;
       --accent-red: #e53935;
       --accent-blue: var(--accent);
       --accent-amber: #f59e0b;
       --accent-green: #10b981;
-      --glass-bg: rgba(15, 20, 30, 0.72);
-      --glass-card: rgba(20, 27, 41, 0.62);
-      --glass-hi: rgba(255, 255, 255, 0.06);
+      --glass-bg: rgba(15, 20, 30, 0.92);
+      --glass-card: rgba(20, 27, 41, 0.84);
+      --glass-hi: rgba(255, 255, 255, 0.07);
+      --menu-bg: #0f141e;
       --shadow-card: 0 8px 24px rgba(0, 0, 0, 0.32), inset 0 1px 0 rgba(255, 255, 255, 0.06);
       --radius-lg: 14px;
       --radius-md: 10px;
@@ -50,16 +53,19 @@
       --border-subtle: rgba(15, 23, 42, 0.10);
       --border-hover: rgba(15, 23, 42, 0.22);
       --text-main: #0f172a;
-      --text-muted: #55637a;
-      --text-dim: #64748b;
+      --text-muted: #43526a;
+      --text-dim: #5b6b82;
       --ok-text: #047857;
       --warn-text: #a16207;
       --err-text: #b91c1c;
       --info-text: #1d4ed8;
       --lime-text: #4d7c0f;
-      --glass-bg: rgba(255, 255, 255, 0.74);
-      --glass-card: rgba(255, 255, 255, 0.66);
-      --glass-hi: rgba(255, 255, 255, 0.7);
+      --accent-text: #1d4ed8;
+      --on-accent: #ffffff;
+      --glass-bg: rgba(255, 255, 255, 0.94);
+      --glass-card: rgba(255, 255, 255, 0.9);
+      --glass-hi: rgba(255, 255, 255, 0.75);
+      --menu-bg: #ffffff;
       --shadow-card: 0 8px 24px rgba(15, 23, 42, 0.10), inset 0 1px 0 rgba(255, 255, 255, 0.7);
       color-scheme: light;
     }
@@ -136,16 +142,16 @@
     }
 
     button.active {
-      background: linear-gradient(135deg, #ef4444 0%, #c62828 100%);
+      background: #c62828;
       border-color: rgba(255, 255, 255, 0.18);
       color: #fff;
       box-shadow: 0 4px 14px rgba(229, 57, 53, 0.35);
     }
 
     button.primary {
-      background: linear-gradient(135deg, var(--accent) 0%, var(--accent-strong) 100%);
-      border-color: rgba(255, 255, 255, 0.18);
-      color: #fff;
+      background: var(--accent-strong);
+      border-color: var(--accent-strong);
+      color: var(--on-accent);
       box-shadow: 0 4px 14px rgba(var(--accent-rgb), 0.32);
     }
     button.primary:hover {
@@ -155,7 +161,7 @@
     button.warn {
       background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
       border-color: rgba(255, 255, 255, 0.18);
-      color: #fff;
+      color: #1f1300;
       box-shadow: 0 4px 14px rgba(245, 158, 11, 0.25);
     }
     button.warn:hover {
@@ -306,8 +312,8 @@
     }
 
     .cal-day.is-sel {
-      background: var(--accent);
-      color: #fff;
+      background: var(--accent-strong);
+      color: var(--on-accent);
     }
 
     .cal-day.has-rec::after {
@@ -323,7 +329,7 @@
     }
 
     .cal-day.is-sel.has-rec::after {
-      background: #fff;
+      background: var(--on-accent);
     }
 
     .cal-day.cal-blank {
@@ -410,9 +416,7 @@
       flex-direction: column;
       gap: 2px;
       padding: 8px;
-      background: var(--glass-bg);
-      backdrop-filter: blur(20px) saturate(160%);
-      -webkit-backdrop-filter: blur(20px) saturate(160%);
+      background: var(--menu-bg);
       border: 1px solid var(--border-hover);
       border-radius: var(--radius-md);
       box-shadow: 0 18px 44px rgba(0, 0, 0, 0.5), inset 0 1px 0 var(--glass-hi);
@@ -485,6 +489,18 @@
       padding: 7px 10px;
       font-size: 15px;
       line-height: 1;
+    }
+
+    .info-btn {
+      width: 30px;
+      height: 30px;
+      padding: 0;
+      border-radius: 50%;
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: 15px;
+      font-weight: 700;
+      line-height: 1;
+      color: var(--accent-text);
     }
 
     .accent-menu {
@@ -710,8 +726,8 @@
     .cam-tile .tile-noimg {
       width: 100%;
       height: 110px;
-      background: radial-gradient(circle, #161d2a 0%, #0b0f17 100%);
-      color: #475569;
+      background: var(--bg-elevated);
+      color: var(--text-muted);
       display: flex;
       align-items: center;
       justify-content: center;
@@ -858,7 +874,7 @@
     .tl-zoom button.active {
       background: rgba(var(--accent-rgb), 0.18);
       border-color: var(--accent);
-      color: var(--accent);
+      color: var(--accent-text);
     }
 
     .tl-zoom button:disabled { opacity: 0.35; cursor: default; }
@@ -1115,10 +1131,10 @@
     .evt-filter-star { display: flex; align-items: center; gap: 4px; font-size: 13px; color: var(--text-main); }
     .evt-filter-star input { width: auto; }
     #btnEvtFilters { display: none; }
-    #btnEvtFilters.active-filter { border-color: var(--accent); color: var(--accent); }
+    #btnEvtFilters.active-filter { border-color: var(--accent); color: var(--accent-text); }
     .evt-presets { display: flex; gap: 6px; flex-wrap: wrap; grid-column: 1 / -1; }
     .evt-presets button { padding: 4px 8px; font-size: 12.5px; min-height: 30px; }
-    .evt-presets button.active { border-color: var(--accent); color: var(--accent); background: rgba(var(--accent-rgb), 0.12); }
+    .evt-presets button.active { border-color: var(--accent); color: var(--accent-text); background: rgba(var(--accent-rgb), 0.12); }
     .evt-chips { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; padding: 0 14px 8px; }
     .evt-chips[hidden] { display: none; }
     .evt-chip {
@@ -1352,6 +1368,170 @@
       max-width: 100%;
     }
 
+    .adv-section {
+      margin: 4px 0 14px;
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-sm);
+      background: var(--bg-elevated);
+    }
+
+    .adv-section > summary {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 12px;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-main);
+      cursor: pointer;
+      list-style: none;
+      user-select: none;
+    }
+
+    .adv-section > summary::-webkit-details-marker { display: none; }
+
+    .adv-section > summary::after {
+      content: "⌄";
+      margin-left: auto;
+      color: var(--text-muted);
+      transition: transform 0.18s var(--ease-out);
+    }
+
+    .adv-section[open] > summary::after { transform: rotate(180deg); }
+
+    .adv-section > summary:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+      border-radius: var(--radius-sm);
+    }
+
+    .adv-section-body {
+      padding: 0 12px 2px;
+      border-top: 1px solid var(--border-subtle);
+    }
+
+    .help-tabs {
+      display: flex;
+      gap: 6px;
+      margin-bottom: 14px;
+      padding: 4px;
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-sm);
+      background: var(--bg-elevated);
+    }
+
+    .help-tabs button {
+      flex: 1;
+      min-width: 0;
+      border-color: transparent;
+      background: transparent;
+      box-shadow: none;
+    }
+
+    .help-tabs button[aria-selected="true"] {
+      background: var(--accent-strong);
+      border-color: var(--accent-strong);
+      color: var(--on-accent);
+    }
+
+    .help-method[hidden] { display: none; }
+
+    .help-lead {
+      margin: 0 0 12px;
+      color: var(--text-muted);
+      font-size: 13px;
+      line-height: 1.55;
+    }
+
+    .help-section-body {
+      padding: 2px 12px 10px;
+    }
+
+    .help-section-body p,
+    .help-section-body li {
+      font-size: 13px;
+      line-height: 1.55;
+    }
+
+    .help-section-body ol,
+    .help-section-body ul {
+      margin: 6px 0 10px;
+      padding-left: 20px;
+    }
+
+    .help-section-body code {
+      padding: 1px 5px;
+      border-radius: 4px;
+      background: var(--bg-hover);
+      color: var(--text-main);
+      font-size: 12px;
+      overflow-wrap: anywhere;
+    }
+
+    .help-code {
+      margin: 8px 0 10px;
+      padding: 12px;
+      overflow-x: auto;
+      border-radius: var(--radius-sm);
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      background: #0b0f17;
+      color: #e2e8f0;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 12px;
+      line-height: 1.55;
+      white-space: pre;
+    }
+
+    .help-code code {
+      padding: 0;
+      background: transparent;
+      color: inherit;
+      font-size: inherit;
+      overflow-wrap: normal;
+    }
+
+    .help-code-url {
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+
+    .help-code-url code {
+      white-space: inherit;
+      overflow-wrap: anywhere;
+    }
+
+    .help-note {
+      margin: 8px 0 10px;
+      padding: 9px 11px;
+      border-left: 3px solid var(--accent);
+      border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+      background: rgba(var(--accent-rgb), 0.1);
+      color: var(--text-main);
+      font-size: 12.5px;
+      line-height: 1.5;
+    }
+
+    .help-table {
+      width: 100%;
+      margin: 8px 0 12px;
+      border-collapse: collapse;
+      font-size: 12px;
+    }
+
+    .help-table th,
+    .help-table td {
+      padding: 6px 7px;
+      border-bottom: 1px solid var(--border-subtle);
+      text-align: left;
+      vertical-align: top;
+    }
+
+    .help-table th {
+      color: var(--text-muted);
+      font-weight: 600;
+      white-space: nowrap;
+    }
+
     .cam-item, .user-row {
       display: flex;
       justify-content: space-between;
@@ -1405,7 +1585,7 @@
       min-width: 18px;
       padding: 1px 6px;
       border-radius: 99px;
-      background: #ef4444;
+      background: #c62828;
       color: #fff;
       font-size: 11px;
       font-weight: 700;
@@ -1875,6 +2055,7 @@
       <span id="statusText" style="font-size:13px;">Đang khởi tạo...</span>
       <span id="userChip" class="user-chip" hidden></span>
       <div class="menu-wrap">
+        <button class="icon-btn info-btn" onclick="openHelpModal()" title="Hướng dẫn cài đặt" aria-label="Hướng dẫn cài đặt" aria-haspopup="dialog">i</button>
         <button class="icon-btn" onclick="toggleSettings(event)" title="Cài đặt" aria-label="Cài đặt" aria-haspopup="true" aria-expanded="false">⚙️</button>
         <div class="settings-menu" id="settingsMenu" hidden role="menu">
           <div class="menu-group" role="presentation">
@@ -2196,13 +2377,9 @@
           </select>
           <small id="storageTargetHint" style="color:var(--text-muted);font-size:12px;"></small>
         </div>
-        <div class="form-row">
-          <label>Số ngày lưu riêng cho camera (0 = dùng mức chung):</label>
-          <input type="number" id="inpRetentionDays" min="0" max="3650" step="1" value="0">
-        </div>
       </div>
 
-      <div class="grid-2" id="quickGenBox" style="display:none; background:#181f2e; padding:12px; border-radius:10px; border:1px solid rgba(255,255,255,0.08); margin-bottom:12px;">
+      <div class="grid-2" id="quickGenBox" style="display:none; background:var(--bg-elevated); padding:12px; border-radius:10px; border:1px solid var(--border-subtle); margin-bottom:12px;">
         <div class="form-row">
           <label>IP Camera:</label>
           <input id="genIp" placeholder="192.168.1.105" oninput="applyBrandPreset()">
@@ -2252,56 +2429,263 @@
         <input id="inpSubRtsp" placeholder="vd: rtsp://admin:pass@ip:554/.../subtype=1 (thường H.264, nhẹ CPU)">
       </div>
 
-      <div class="grid-2">
-        <div class="form-row">
-          <label>Giao thức truyền tải (chỉ áp dụng cho RTSP):</label>
-          <select id="inpTransport">
-            <option value="tcp">TCP (Ổn định, khuyên dùng)</option>
-            <option value="udp">UDP (Dành cho cam Yoosee đời cũ)</option>
-          </select>
+      <details class="adv-section" id="camAdvanced">
+        <summary>⚙️ Tùy chọn nâng cao: giao thức, codec, lịch ghi, cảm biến</summary>
+        <div class="adv-section-body">
+          <div class="grid-2">
+            <div class="form-row">
+              <label>Giao thức truyền tải (chỉ áp dụng cho RTSP):</label>
+              <select id="inpTransport">
+                <option value="tcp">TCP (Ổn định, khuyên dùng)</option>
+                <option value="udp">UDP (Dành cho cam Yoosee đời cũ)</option>
+              </select>
+            </div>
+            <div class="form-row">
+              <label>Xử lý Âm thanh (Audio):</label>
+              <select id="inpAudio">
+                <option value="aac">Bật âm thanh (Chuẩn AAC)</option>
+                <option value="none">Tắt âm thanh (Tránh lỗi cam kén tiếng)</option>
+                <option value="copy">Giữ nguyên gốc (Copy)</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="grid-2">
+            <div class="form-row">
+              <label>Codec video (chọn H.264 nếu live/bản ghi bị đen):</label>
+              <select id="inpVideoCodec">
+                <option value="auto">Tự động phát hiện (Khuyến nghị)</option>
+                <option value="copy">Copy (Nhẹ CPU nhất - chỉ dùng khi camera là H.264)</option>
+                <option value="h264">Luôn chuyển sang H.264 (Tương thích mọi trình duyệt)</option>
+              </select>
+            </div>
+            <div class="form-row">
+              <label>Số ngày lưu riêng (0 = dùng mức chung):</label>
+              <input type="number" id="inpRetentionDays" min="0" max="3650" step="1" value="0">
+            </div>
+          </div>
+
+          <div class="form-row">
+            <label style="flex-direction:row; align-items:center; gap:8px; cursor:pointer;">
+              <input type="checkbox" id="inpSchedEnabled" style="width:auto;">
+              📅 Bật lịch ghi hình theo giờ (ngoài mọi khung giờ = KHÔNG ghi)
+            </label>
+          </div>
+          <div id="schedRows"></div>
+          <button style="margin-bottom:10px;" onclick="addSchedRow()">+ Thêm khung giờ</button>
+
+          <div class="form-row">
+            <label>🛰️ Cảm biến chuyển động Home Assistant (chọn cảm biến và điều kiện kích hoạt; cần bật ở 🛰️ Home Assistant):</label>
+          </div>
+          <div id="camHassRows"></div>
+          <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px;flex-wrap:wrap;">
+            <button type="button" onclick="addCamHassRow()">+ Thêm cảm biến</button>
+            <button type="button" class="warn" onclick="loadHassSensors()">↻ Tải danh sách sensor từ HA</button>
+            <span id="camHassMsg" style="font-size:12px;color:var(--text-muted);"></span>
+          </div>
         </div>
-        <div class="form-row">
-          <label>Xử lý Âm thanh (Audio):</label>
-          <select id="inpAudio">
-            <option value="aac">Bật âm thanh (Chuẩn AAC)</option>
-            <option value="none">Tắt âm thanh (Tránh lỗi cam kén tiếng)</option>
-            <option value="copy">Giữ nguyên gốc (Copy)</option>
-          </select>
-        </div>
-      </div>
-
-      <div class="form-row">
-        <label>Codec video (Chọn H.264 nếu xem Live/Bản ghi trên trình duyệt bị đen/không phát):</label>
-        <select id="inpVideoCodec">
-          <option value="auto">Tự động phát hiện (Khuyến nghị)</option>
-          <option value="copy">Copy (Nhẹ CPU nhất - chỉ dùng khi camera là H.264)</option>
-          <option value="h264">Luôn chuyển sang H.264 (Tương thích mọi trình duyệt)</option>
-        </select>
-      </div>
-
-      <div class="form-row">
-        <label style="flex-direction:row; align-items:center; gap:8px; cursor:pointer;">
-          <input type="checkbox" id="inpSchedEnabled" style="width:auto;">
-          📅 Bật lịch ghi hình theo giờ (ngoài mọi khung giờ = KHÔNG ghi)
-        </label>
-      </div>
-      <div id="schedRows"></div>
-      <button style="margin-bottom:10px;" onclick="addSchedRow()">+ Thêm khung giờ</button>
-
-      <div class="form-row">
-        <label>🛰️ Cảm biến chuyển động Home Assistant (chọn cảm biến và điều kiện kích hoạt; cần bật ở 🛰️ Home Assistant):</label>
-      </div>
-      <div id="camHassRows"></div>
-      <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px;flex-wrap:wrap;">
-        <button type="button" onclick="addCamHassRow()">+ Thêm cảm biến</button>
-        <button type="button" class="warn" onclick="loadHassSensors()">↻ Tải danh sách sensor từ HA</button>
-        <span id="camHassMsg" style="font-size:12px;color:var(--text-muted);"></span>
-      </div>
+      </details>
       </div>
 
       <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:14px;">
         <button onclick="closeCamModal()">Đóng</button>
         <button class="primary" id="btnSaveCamera" onclick="saveCamera()" hidden>Lưu Camera</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal Hướng dẫn cài đặt -->
+  <div class="modal" id="helpModal">
+    <div class="modal-box" style="max-width:760px;" role="dialog" aria-modal="true" aria-labelledby="helpTitle">
+      <h3 id="helpTitle" style="margin-top:0">Hướng dẫn cài đặt LiteNVR</h3>
+      <div class="help-tabs" role="tablist" aria-label="Chọn cách cài đặt">
+        <button role="tab" id="helpTabHass" aria-selected="true" aria-controls="helpHass" onclick="helpTab('hass')" onkeydown="helpTabKey(event)">Home Assistant Add-on</button>
+        <button role="tab" id="helpTabDocker" aria-selected="false" aria-controls="helpDocker" tabindex="-1" onclick="helpTab('docker')" onkeydown="helpTabKey(event)">Docker / Compose</button>
+      </div>
+
+      <div id="helpHass" class="help-method" role="tabpanel" aria-labelledby="helpTabHass" tabindex="0">
+        <p class="help-lead">Dành cho Home Assistant OS hoặc Home Assistant Supervised. Add-on dùng Ingress, cổng nội bộ <b>3333</b> và tự quản lý vòng đời ứng dụng.</p>
+
+        <details class="adv-section" open>
+          <summary>1. Thêm kho add-on và cài đặt</summary>
+          <div class="help-section-body">
+            <ol>
+              <li>Mở <b>Cài đặt → Add-ons → Add-on Store</b>.</li>
+              <li>Bấm <b>⋮</b> ở góc phải, chọn <b>Repositories</b>.</li>
+              <li>Dán URL kho add-on bên dưới, bấm <b>Add</b> rồi đóng hộp thoại.</li>
+              <li>Tìm <b>LiteNVR</b>, mở add-on và bấm <b>Install</b>.</li>
+            </ol>
+            <pre class="help-code help-code-url"><code>https://github.com/trankhanhduy2929-beep/my_hass_addon_public</code></pre>
+            <p>Hỗ trợ kiến trúc <code>amd64</code> và <code>aarch64</code>. Sau khi cài, mở tab <b>Configuration</b> để nhập các tuỳ chọn ở bước 2.</p>
+          </div>
+        </details>
+
+        <details class="adv-section">
+          <summary>2. Cấu hình add-on</summary>
+          <div class="help-section-body">
+            <table class="help-table">
+              <tr><th>Tuỳ chọn</th><th>Gợi ý / ý nghĩa</th></tr>
+              <tr><td><code>password</code></td><td><b>Bắt buộc, tối thiểu 12 ký tự</b>, không dùng mật khẩu đã rò rỉ. Đây là mật khẩu đăng nhập web.</td></tr>
+              <tr><td><code>username</code></td><td>Mặc định <code>admin</code>.</td></tr>
+              <tr><td><code>timezone</code></td><td>Ví dụ <code>Asia/Ho_Chi_Minh</code>.</td></tr>
+              <tr><td><code>storage_location</code></td><td><code>media</code> → <code>/media/litenvr</code> (khuyến nghị), <code>share</code> → <code>/share/litenvr</code>, <code>data</code> → <code>/data/litenvr</code>.</td></tr>
+              <tr><td><code>go2rtc</code></td><td><code>auto</code> để dùng chung một phiên RTSP cho ghi hình/live/snapshot; <code>off</code> nếu đã có go2rtc bên ngoài.</td></tr>
+              <tr><td><code>ffmpeg_threads</code></td><td>Bắt đầu với <code>2</code>; tăng nếu box khoẻ và có nhiều camera H.265.</td></tr>
+              <tr><td><code>live_max_height</code></td><td><code>720</code> giúp nhẹ CPU; bản ghi vẫn giữ nguyên chất lượng gốc. Đặt <code>0</code> để giữ nguyên live.</td></tr>
+              <tr><td><code>iframe</code></td><td>Bật nếu muốn nhúng LiteNVR vào dashboard Home Assistant.</td></tr>
+            </table>
+            <div class="help-note">Không dùng chung mật khẩu với tài khoản Home Assistant. Nếu Home Assistant báo mật khẩu yếu, hãy nhập mật khẩu dài và duy nhất hơn.</div>
+          </div>
+        </details>
+
+        <details class="adv-section">
+          <summary>3. Khởi động và mở giao diện</summary>
+          <div class="help-section-body">
+            <ol>
+              <li>Bấm <b>Start</b> và chờ trạng thái chuyển sang <b>Started</b>.</li>
+              <li>Bật <b>Show in sidebar</b> để mở LiteNVR ngay trong Home Assistant, hoặc bấm <b>OPEN WEB UI</b>.</li>
+              <li>Truy cập trực tiếp ngoài Home Assistant tại <code>http://IP_HOME_ASSISTANT:3333</code>.</li>
+              <li>Đăng nhập bằng <code>username</code> và <code>password</code> đã đặt.</li>
+            </ol>
+            <p>Nếu không mở được cổng 3333, kiểm tra phần <b>Network</b> của add-on và firewall. Ingress trong sidebar vẫn dùng được dù cổng ngoài bị chặn.</p>
+          </div>
+        </details>
+
+        <details class="adv-section">
+          <summary>4. Thêm camera, lưu trữ và tính năng</summary>
+          <div class="help-section-body">
+            <ol>
+              <li>Mở <b>⚙️ → Quản lý Camera</b>, chọn <b>Tự động dò ONVIF</b> hoặc <b>Nhập URL thủ công</b>.</li>
+              <li>Nếu multicast bị chặn, nhập dải LAN (ví dụ <code>192.168.1.0/24</code>) và bấm <b>Quét dải IP</b>.</li>
+              <li>Chọn chế độ ghi, nơi lưu và kiểm tra luồng trước khi lưu camera.</li>
+              <li>Cấu hình Google Drive hoặc NAS trong <b>⚙️ → Google Drive</b> / <b>Sao lưu SMB/NFS/FTP</b>.</li>
+              <li>Gán cảm biến Home Assistant cho từng camera trong mục <b>Tùy chọn nâng cao</b> khi sửa camera.</li>
+            </ol>
+            <p>Với <code>storage_location=media</code>, tệp nằm trong Media của Home Assistant nhưng không tự vào bản sao lưu add-on. Với <code>data</code>, cấu hình nằm trong bản sao lưu nhưng không phù hợp cho ổ ghi hình lớn.</p>
+          </div>
+        </details>
+
+        <details class="adv-section">
+          <summary>5. Cập nhật, sao lưu và xử lý sự cố</summary>
+          <div class="help-section-body">
+            <ul>
+              <li><b>Cập nhật:</b> vào add-on → <b>Update</b>. Tạo snapshot Home Assistant trước khi nâng cấp.</li>
+              <li><b>Sao lưu:</b> snapshot add-on (nếu dùng <code>data</code>) và sao chép thư mục cấu hình/bản ghi nếu dùng <code>media</code>/<code>share</code>.</li>
+              <li><b>Không đăng nhập được:</b> kiểm tra mật khẩu tối thiểu 12 ký tự và nhập lại trong tab Configuration.</li>
+              <li><b>Không thấy camera ONVIF:</b> dùng quét dải IP; đảm bảo camera cùng mạng với Home Assistant.</li>
+              <li><b>Live chậm 10–15 giây:</b> kiểm tra GOP/keyframe của camera, hạ <code>live_max_height</code> hoặc dùng luồng phụ H.264. HLS có độ trễ tối thiểu khoảng 1–4 giây tuỳ camera.</li>
+            </ul>
+          </div>
+        </details>
+      </div>
+
+      <div id="helpDocker" class="help-method" role="tabpanel" aria-labelledby="helpTabDocker" tabindex="0" hidden>
+        <p class="help-lead">Dành cho Docker Engine, Docker Compose, ZimaOS hoặc NAS. Ứng dụng lắng nghe cổng <b>8080</b> trong container; cổng ngoài có thể là 8080 hoặc 9895.</p>
+
+        <details class="adv-section" open>
+          <summary>1. Chạy nhanh bằng docker run</summary>
+          <div class="help-section-body">
+            <p>Tạo thư mục lưu trữ trên ổ cứng trước, sau đó chạy:</p>
+            <pre class="help-code"><code>docker run -d --name litenvr --restart unless-stopped \
+  -p 8080:8080 \
+  -e TZ=Asia/Ho_Chi_Minh \
+  -e NVR_USER=admin \
+  -e NVR_PASS='DoiMatKhauManh123!' \
+  -e NVR_AUTH=on \
+  -e LIVE_MAX_HEIGHT=720 \
+  -e GO2RTC=auto \
+  -v /mnt/nvr:/storage \
+  --tmpfs /dev/shm/hls:size=256m \
+  --tmpfs /dev/shm/buffer:size=512m \
+  ghcr.io/trankhanhduy2929-beep/litenvr:latest</code></pre>
+            <p>Mở <code>http://IP_MAY_CHU:8080</code> và đăng nhập bằng tài khoản vừa đặt. Đổi <code>-p 8080:8080</code> thành <code>-p 9895:8080</code> nếu muốn dùng cổng 9895.</p>
+          </div>
+        </details>
+
+        <details class="adv-section">
+          <summary>2. Docker Compose đầy đủ</summary>
+          <div class="help-section-body">
+            <pre class="help-code"><code>services:
+  litenvr:
+    image: ghcr.io/trankhanhduy2929-beep/litenvr:latest
+    container_name: litenvr
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      TZ: Asia/Ho_Chi_Minh
+      NVR_USER: admin
+      NVR_PASS: "DoiMatKhauManh123!"
+      NVR_AUTH: "on"
+      LIVE_IDLE_STOP_SEC: "30"
+      LIVE_MAX_HEIGHT: "720"
+      GO2RTC: auto
+    volumes:
+      - /mnt/nvr:/storage
+    tmpfs:
+      - /dev/shm/hls:size=256m
+      - /dev/shm/buffer:size=512m</code></pre>
+            <p>Chạy <code>docker compose up -d</code> trong thư mục chứa file. Trên ZimaOS, có thể dán file này vào <b>Install a customized app → Import</b>.</p>
+          </div>
+        </details>
+
+        <details class="adv-section">
+          <summary>3. Biến môi trường quan trọng</summary>
+          <div class="help-section-body">
+            <table class="help-table">
+              <tr><th>Biến</th><th>Mặc định / ghi chú</th></tr>
+              <tr><td><code>NVR_USER</code>, <code>NVR_PASS</code></td><td>Tài khoản web. Đổi mật khẩu mạnh ngay khi cài; không dùng <code>admin</code>.</td></tr>
+              <tr><td><code>NVR_AUTH</code></td><td><code>on</code> bật đăng nhập (khuyến nghị); <code>off</code> chỉ dùng trong LAN tin cậy.</td></tr>
+              <tr><td><code>LIVE_MAX_HEIGHT</code></td><td><code>720</code> hạ live khi phải chuyển mã; <code>0</code> giữ nguyên.</td></tr>
+              <tr><td><code>LIVE_HLS_TIME</code></td><td>Mặc định <code>1</code> giây. Tăng lên <code>2</code> nếu mạng không ổn định.</td></tr>
+              <tr><td><code>LIVE_HLS_LIST</code></td><td>Mặc định <code>4</code> segment. Playlist ngắn giúp giảm độ trễ.</td></tr>
+              <tr><td><code>LIVE_IDLE_STOP_SEC</code></td><td><code>30</code> giây không có người xem thì tạm dừng nhánh live.</td></tr>
+              <tr><td><code>GO2RTC</code></td><td><code>auto</code> dùng restream nội bộ; <code>off</code> nếu đã có go2rtc/Frigate bên ngoài.</td></tr>
+              <tr><td><code>FFMPEG_THREADS</code></td><td>Số luồng FFmpeg, mặc định <code>2</code>.</td></tr>
+            </table>
+            <div class="help-note">Không đổi <code>LIVE_HLS_TIME</code>/<code>LIVE_HLS_LIST</code> xuống quá thấp nếu camera có GOP dài; trình duyệt có thể phải chờ keyframe.</div>
+          </div>
+        </details>
+
+        <details class="adv-section">
+          <summary>4. Cổng, quyền truy cập và HTTPS</summary>
+          <div class="help-section-body">
+            <ul>
+              <li>Container dùng cổng <b>8080</b>. Ánh xạ host tùy ý, ví dụ <code>9895:8080</code>.</li>
+              <li>Mở firewall cho cổng đã chọn; chỉ nên công khai qua VPN/reverse proxy có HTTPS.</li>
+              <li>Nếu đặt sau Nginx/Caddy, tắt proxy buffering cho đường dẫn <code>/hls/</code> để không tăng độ trễ.</li>
+              <li>Dùng <code>NVR_IFRAME=on</code> nếu cần nhúng vào dashboard.</li>
+            </ul>
+          </div>
+        </details>
+
+        <details class="adv-section">
+          <summary>5. Lưu trữ, sao lưu và cập nhật</summary>
+          <div class="help-section-body">
+            <ul>
+              <li>Volume <code>/mnt/nvr:/storage</code> phải trỏ tới ổ cứng thật, không dùng thư mục tạm.</li>
+              <li>Sao lưu <code>/storage/config.json</code>, <code>/storage/nvr.db</code>, <code>/storage/go2rtc.yaml</code> trước khi nâng cấp.</li>
+              <li>Bản ghi nằm trong <code>/storage/recordings</code>; có thể sao lưu riêng nếu cần.</li>
+              <li>Cập nhật: <code>docker compose pull</code> sau đó <code>docker compose up -d</code>.</li>
+            </ul>
+          </div>
+        </details>
+
+        <details class="adv-section">
+          <summary>6. Xử lý sự cố thường gặp</summary>
+          <div class="help-section-body">
+            <ul>
+              <li><b>Live chậm 10–15 giây:</b> cập nhật image mới, kiểm tra camera GOP/keyframe, dùng luồng phụ H.264 và tăng <code>LIVE_HLS_LIST</code> nếu mạng chập chờn.</li>
+              <li><b>Hình đen:</b> camera H.265/HEVC hoặc profile lạ; đặt Codec video = H.264 trong phần sửa camera.</li>
+              <li><b>Camera mất kết nối:</b> giảm số app kéo stream, dùng go2rtc restream, kiểm tra giới hạn phiên RTSP.</li>
+              <li><b>Không vào web:</b> kiểm tra ánh xạ cổng, log <code>docker logs litenvr</code>, và mật khẩu <code>NVR_PASS</code>.</li>
+            </ul>
+          </div>
+        </details>
+      </div>
+
+      <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:16px;">
+        <button class="primary" onclick="closeHelpModal()">Đóng</button>
       </div>
     </div>
   </div>
@@ -3156,9 +3540,45 @@
       if (subnet && !subnet.value.trim()) subnet.value = guessOnvifSubnet();
       onvifReset();
       setCamMethod("onvif");
+      const adv = document.getElementById("camAdvanced");
+      if (adv) adv.open = false;
       document.getElementById("camModal").classList.add("open");
     }
     function closeCamModal() { document.getElementById("camModal").classList.remove("open"); }
+
+    let helpReturnFocus = null;
+    function openHelpModal() {
+      closePopovers();
+      helpReturnFocus = document.activeElement;
+      document.getElementById("helpModal").classList.add("open");
+      helpTab("hass");
+      setTimeout(() => {
+        if (document.getElementById("helpModal").classList.contains("open")) document.getElementById("helpTabHass").focus();
+      }, 220);
+    }
+    function closeHelpModal() {
+      document.getElementById("helpModal").classList.remove("open");
+      if (helpReturnFocus && typeof helpReturnFocus.focus === "function") helpReturnFocus.focus();
+      helpReturnFocus = null;
+    }
+    function helpTab(name) {
+      const hass = name !== "docker";
+      document.getElementById("helpTabHass").setAttribute("aria-selected", hass ? "true" : "false");
+      document.getElementById("helpTabHass").tabIndex = hass ? 0 : -1;
+      document.getElementById("helpTabDocker").setAttribute("aria-selected", hass ? "false" : "true");
+      document.getElementById("helpTabDocker").tabIndex = hass ? -1 : 0;
+      document.getElementById("helpHass").hidden = !hass;
+      document.getElementById("helpDocker").hidden = hass;
+    }
+    function helpTabKey(e) {
+      const keys = ["ArrowLeft", "ArrowRight", "Home", "End"];
+      if (!keys.includes(e.key)) return;
+      e.preventDefault();
+      const docker = e.currentTarget.id === "helpTabDocker";
+      const next = e.key === "Home" ? "hass" : e.key === "End" ? "docker" : (docker ? "hass" : "docker");
+      helpTab(next);
+      document.getElementById(next === "hass" ? "helpTabHass" : "helpTabDocker").focus();
+    }
 
     function editCam(id) {
       const c = cameras[id];
@@ -3186,6 +3606,8 @@
       hrows.innerHTML = "";
       (c.hass_entities || []).forEach(ent => addCamHassRow(ent));
       ensureHassSensors();
+      const adv = document.getElementById("camAdvanced");
+      if (adv) adv.open = !!(c.schedule_enabled || (c.schedule || []).length || (c.hass_entities || []).length);
       setCamMethod("manual");
     }
 
@@ -3863,6 +4285,18 @@
       if (liveHeartbeatTimer) { clearInterval(liveHeartbeatTimer); liveHeartbeatTimer = null; }
     }
 
+    function liveHlsConfig() {
+      return {
+        liveDurationInfinity: true,
+        liveSyncDurationCount: 1,
+        liveMaxLatencyDurationCount: 3,
+        maxLiveSyncPlaybackRate: 1.5,
+        maxBufferLength: 4,
+        maxMaxBufferLength: 8,
+        backBufferLength: 10
+      };
+    }
+
     async function waitLiveReady(camId, seq) {
       const statusEl = document.getElementById("statusText");
       for (let i = 0; i < 15; i++) {
@@ -3903,7 +4337,7 @@
       if (seq !== liveWaitSeq || camId !== currentCam || !liveMode) return;
       if (typeof Hls !== "undefined" && Hls.isSupported()) {
         if (hls) { hls.destroy(); hls = null; }
-        const inst = new Hls({liveDurationInfinity: true});
+        const inst = new Hls(liveHlsConfig());
         hls = inst;
         inst.on(Hls.Events.ERROR, (evt, data) => {
           if (!data || !data.fatal || hls !== inst) return;
@@ -4860,7 +5294,7 @@
         const url = `hls/${id}/live.m3u8`;
         let h = null;
         if (typeof Hls !== "undefined" && Hls.isSupported()) {
-          h = new Hls({ liveDurationInfinity: true });
+          h = new Hls(liveHlsConfig());
           h.loadSource(url);
           h.attachMedia(v);
           h.on(Hls.Events.MANIFEST_PARSED, () => v.play().catch(() => {}));
@@ -5285,10 +5719,66 @@
       return { rgb: r + ", " + g + ", " + b, strong: st };
     }
 
+    function hexRgb(hex) {
+      const m = String(hex || "").trim().match(/^#?([0-9a-f]{6})$/i);
+      if (!m) return null;
+      const n = parseInt(m[1], 16);
+      return [n >> 16 & 255, n >> 8 & 255, n & 255];
+    }
+
+    function rgbCss(rgb) {
+      return `rgb(${rgb.map(v => Math.round(v)).join(", ")})`;
+    }
+
+    function mixRgb(a, b, t) {
+      return a.map((v, i) => v + (b[i] - v) * t);
+    }
+
+    function relLum(rgb) {
+      const c = rgb.map(v => {
+        const x = v / 255;
+        return x <= 0.04045 ? x / 12.92 : Math.pow((x + 0.055) / 1.055, 2.4);
+      });
+      return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+    }
+
+    function contrastRgb(a, b) {
+      const [hi, lo] = [relLum(a), relLum(b)].sort((x, y) => y - x);
+      return (hi + 0.05) / (lo + 0.05);
+    }
+
+    function readableAccent(hex, light) {
+      const rgb = hexRgb(hex);
+      if (!rgb) return hex;
+      const bg = light ? [238, 242, 248] : [17, 22, 33];
+      const toward = light ? [15, 23, 42] : [241, 245, 249];
+      for (let i = 0; i <= 10; i++) {
+        const cand = mixRgb(rgb, toward, i / 10);
+        if (contrastRgb(cand, bg) >= 4.5) return rgbCss(cand);
+      }
+      return rgbCss(toward);
+    }
+
+    function onAccent(hex) {
+      const rgb = hexRgb(hex);
+      if (!rgb) return "#ffffff";
+      return contrastRgb([255, 255, 255], rgb) >= contrastRgb([15, 23, 42], rgb) ? "#ffffff" : "#0f172a";
+    }
+
+    function applyAccentTokens() {
+      const cs = getComputedStyle(document.documentElement);
+      const accent = cs.getPropertyValue("--accent").trim() || "#3b82f6";
+      const strong = cs.getPropertyValue("--accent-strong").trim() || accent;
+      const light = document.documentElement.getAttribute("data-theme") === "light";
+      document.documentElement.style.setProperty("--accent-text", readableAccent(accent, light));
+      document.documentElement.style.setProperty("--on-accent", onAccent(strong));
+    }
+
     function applyTheme(t) {
       document.documentElement.setAttribute("data-theme", t);
       const btn = document.getElementById("btnTheme");
       if (btn) btn.textContent = t === "light" ? "☀️ Sáng" : "🌙 Tối";
+      applyAccentTokens();
       try { localStorage.setItem("nvr-theme", t); } catch (e) {}
     }
 
@@ -5301,6 +5791,7 @@
       document.documentElement.style.setProperty("--accent", color);
       document.documentElement.style.setProperty("--accent-strong", c.strong);
       document.documentElement.style.setProperty("--accent-rgb", c.rgb);
+      applyAccentTokens();
       try { localStorage.setItem("nvr-accent", color); } catch (e) {}
       document.querySelectorAll("#accentSwatches .swatch").forEach(s => {
         s.setAttribute("aria-pressed", s.dataset.accent.toLowerCase() === color.toLowerCase() ? "true" : "false");
@@ -5391,6 +5882,7 @@
         hassModal: closeHassModal, notifyModal: closeNotifyModal, secModal: closeSecModal,
         backupModal: closeBackupModal,
         driveModal: closeDriveModal,
+        helpModal: closeHelpModal,
         evtModal: closeEvtModal
       };
       const fn = closers[top.id];
@@ -5429,7 +5921,7 @@
         d.style.fontSize = "13px";
         d.innerHTML = `<b>${s.current ? "Thiết bị này" : esc(s.ip || "không rõ IP")}</b>` +
           `<span style="color:var(--text-muted);"> · ${fmt(s.created)} → ${fmt(s.expires)}</span>` +
-          (s.current ? ' <span style="color:var(--accent);">(phiên hiện tại)</span>' : "");
+          (s.current ? ' <span style="color:var(--accent-text);">(phiên hiện tại)</span>' : "");
         box.appendChild(d);
       });
     }

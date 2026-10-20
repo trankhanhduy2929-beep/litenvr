@@ -961,9 +961,10 @@ LIVE_IDLE_STOP_SEC = int(os.environ.get("LIVE_IDLE_STOP_SEC", "30"))
 # Chiều cao tối đa cho live HLS khi phải chuyển mã (0 = giữ nguyên gốc).
 # Hạ độ phân giải live giúp CPU giảm mạnh với camera 2K/4K (bản ghi vẫn giữ nguyên gốc).
 LIVE_MAX_HEIGHT = int(os.environ.get("LIVE_MAX_HEIGHT", "720") or "0")
-# HLS độ trễ thấp: giảm thời lượng segment và số segment giữ trong playlist.
-LIVE_HLS_TIME = max(1, min(10, int(os.environ.get("LIVE_HLS_TIME", "2") or "2")))
-LIVE_HLS_LIST = max(2, min(20, int(os.environ.get("LIVE_HLS_LIST", "5") or "5")))
+# HLS độ trễ thấp: segment 1 giây và playlist ngắn để trình duyệt bám sát live edge.
+# Tăng LIVE_HLS_TIME/LIVE_HLS_LIST nếu mạng Wi-Fi yếu hoặc camera có GOP dài.
+LIVE_HLS_TIME = max(1, min(10, int(os.environ.get("LIVE_HLS_TIME", "1") or "1")))
+LIVE_HLS_LIST = max(3, min(20, int(os.environ.get("LIVE_HLS_LIST", "4") or "4")))
 # Theo dõi cảnh báo đầy ổ (tránh spam log)
 _disk_warn = {"t": 0.0}
 _disk_paused = {"low": False}
@@ -1986,15 +1987,21 @@ def build_ffmpeg_cmd(cam_id: str, cam_info: dict, video_codec: Optional[str] = N
     if include_live:
         live_input_idx = "1:v:0" if use_dual_input else "0:v:0"
         live_args = list(vcodec_args)
-        if video_codec == "h264" and LIVE_MAX_HEIGHT > 0:
-            live_args = ["-vf", f"scale=-2:'min({LIVE_MAX_HEIGHT},ih)'"] + live_args
+        if video_codec == "h264":
+            # Ép keyframe đúng nhịp segment để HLS không phải chờ GOP dài của camera.
+            live_args += ["-force_key_frames", f"expr:gte(t,n_forced*{LIVE_HLS_TIME})"]
+            if LIVE_MAX_HEIGHT > 0:
+                live_args = ["-vf", f"scale=-2:'min({LIVE_MAX_HEIGHT},ih)'"] + live_args
         cmd.extend([
             "-map", live_input_idx,
             *live_args, "-an",
             "-f", "hls",
             "-hls_time", str(LIVE_HLS_TIME),
+            "-hls_init_time", str(LIVE_HLS_TIME),
             "-hls_list_size", str(LIVE_HLS_LIST),
-            "-hls_flags", "delete_segments+independent_segments",
+            "-hls_delete_threshold", "1",
+            "-hls_flags", "delete_segments+independent_segments+temp_file",
+            "-hls_allow_cache", "0",
             os.path.join(cam_hls_dir, "live.m3u8")
         ])
     return cmd
