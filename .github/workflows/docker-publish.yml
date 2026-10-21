@@ -43,4 +43,6 @@ jobs:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: ${{ env.REGISTRY }}/${{ steps.repo_low.outputs.name }}:latest
+          tags: |
+            ${{ env.REGISTRY }}/${{ steps.repo_low.outputs.name }}:latest
+            ${{ env.REGISTRY }}/${{ steps.repo_low.outputs.name }}:${{ github.sha }}

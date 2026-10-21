@@ -2923,6 +2923,8 @@
 
   <script>
     let cameras = {}, sysInfo = {}, currentCam = "", segments = [], hls = null, liveHeartbeatTimer = null, liveMode = true;
+    let editingCamId = null;
+    let _uiTimersStarted = false;
     let lastCursorSec = 0;
     let timelineZoom = 86400, timelineStart = 0, postMotionSec = 60, _tlViewKey = "";
     const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -3292,11 +3294,10 @@
       if (changed) renderCamStrip();
     }
 
-    async function init() {
-      if (isAdmin()) await loadSystem();
+    async function refreshCameras(preferredId) {
       const res = await fetch("api/cameras");
-      cameras = await res.json();
-      if (cameras.detail) cameras = {};
+      const data = await res.json();
+      cameras = (data && !data.detail) ? data : {};
       const sel = document.getElementById("camSelect");
       sel.innerHTML = "";
       for (const [id, info] of Object.entries(cameras)) {
@@ -3314,13 +3315,23 @@
           searchCam.appendChild(o);
         }
       }
+      const desired = (preferredId && cameras[preferredId]) ? preferredId
+        : (currentCam && cameras[currentCam] ? currentCam : (sel.options[0] ? sel.options[0].value : ""));
+      if (desired) sel.value = desired;
+      currentCam = desired;
       loadEventLabels();
+      return desired;
+    }
+
+    async function init() {
+      if (isAdmin()) await loadSystem();
+      await refreshCameras();
+      const sel = document.getElementById("camSelect");
       if (Object.keys(cameras).length === 0) {
         document.getElementById("statusText").textContent = isAdmin() ? "Chưa có camera. Bấm ⚙️ → Quản lý Camera để thêm." : "Chưa có camera được cấp quyền.";
         if (isAdmin()) openCamModal();
         return;
       }
-      currentCam = sel.value;
       sel.onchange = () => sceneSwap(() => {
         currentCam = sel.value;
         closeCalendar();
@@ -3330,27 +3341,30 @@
       });
       dateInput.onchange = () => { loadTimeline(); updateDateBadge(); };
       initScrubber();
-      video.addEventListener("timeupdate", () => {
-        if (currentSegStartSec == null || isNaN(video.currentTime)) return;
-        const sec = currentSegStartSec + video.currentTime;
-        ensureTimelineCursor(sec);
-        setCursor(sec, false);
-        document.getElementById("scrubTime").textContent = "Bản ghi: " + fmtHMS(sec);
-      });
+      if (!_uiTimersStarted) {
+        _uiTimersStarted = true;
+        video.addEventListener("timeupdate", () => {
+          if (currentSegStartSec == null || isNaN(video.currentTime)) return;
+          const sec = currentSegStartSec + video.currentTime;
+          ensureTimelineCursor(sec);
+          setCursor(sec, false);
+          document.getElementById("scrubTime").textContent = "Bản ghi: " + fmtHMS(sec);
+        });
+        setInterval(loadStats, 1000);
+        setInterval(refreshSnapshots, 30000);
+        setInterval(refreshCamStatuses, 15000);
+        // Khi đang xem trực tiếp, tự cập nhật danh sách sự kiện để ảnh chuyển động mới hiện ra.
+        setInterval(() => {
+          const searching = (document.getElementById("evtSearchQ") || {}).value;
+          if (liveMode && !searching && document.visibilityState === "visible") loadTimeline();
+        }, 15000);
+        setInterval(updateLogBadge, 15000);
+      }
       await refreshSnapshots();
       renderCamStrip();
       refreshCamStatuses();
       await loadStats();
-      setInterval(loadStats, 1000);
-      setInterval(refreshSnapshots, 30000);
-      setInterval(refreshCamStatuses, 15000);
-      // Khi đang xem trực tiếp, tự cập nhật danh sách sự kiện để ảnh chuyển động mới hiện ra.
-      setInterval(() => {
-        const searching = (document.getElementById("evtSearchQ") || {}).value;
-        if (liveMode && !searching && document.visibilityState === "visible") loadTimeline();
-      }, 15000);
       updateLogBadge();
-      setInterval(updateLogBadge, 15000);
       await loadTimeline();
       playLive();
       if (gridCount > 0) renderGrid();
@@ -3471,24 +3485,58 @@
       setCamMethod(method, true);
     }
 
-    function openCamModal() {
-      renderCamList();
-      updateStorageHint();
+    function resetCamForm() {
+      editingCamId = null;
+      const idInput = document.getElementById("inpCamId");
+      idInput.value = "";
+      idInput.readOnly = false;
+      idInput.title = "";
+      ["inpCamName", "inpRoom", "inpTags", "inpRtsp", "inpSubRtsp", "genIp", "genPass"].forEach(fid => {
+        const el = document.getElementById(fid);
+        if (el) el.value = "";
+      });
+      document.getElementById("inpBrand").value = "custom";
+      document.getElementById("inpRecordMode").value = "continuous";
+      document.getElementById("inpStorageTarget").value = "both";
+      document.getElementById("inpRetentionDays").value = 0;
+      document.getElementById("inpTransport").value = "tcp";
+      document.getElementById("inpAudio").value = "aac";
+      document.getElementById("inpVideoCodec").value = "auto";
+      document.getElementById("inpSchedEnabled").checked = false;
+      document.getElementById("schedRows").innerHTML = "";
+      document.getElementById("camHassRows").innerHTML = "";
       const testOut = document.getElementById("camTestResult");
       if (testOut) testOut.textContent = "";
+      const adv = document.getElementById("camAdvanced");
+      if (adv) adv.open = false;
+      updateStorageHint();
+      ensureHassSensors();
+    }
+
+    function openCamModal() {
+      resetCamForm();
+      renderCamList();
       const subnet = document.getElementById("onvifSubnet");
       if (subnet && !subnet.value.trim()) subnet.value = guessOnvifSubnet();
       onvifReset();
       setCamMethod("onvif");
-      const adv = document.getElementById("camAdvanced");
-      if (adv) adv.open = false;
       document.getElementById("camModal").classList.add("open");
     }
-    function closeCamModal() { document.getElementById("camModal").classList.remove("open"); }
+    function closeCamModal() {
+      document.getElementById("camModal").classList.remove("open");
+      editingCamId = null;
+      const idInput = document.getElementById("inpCamId");
+      if (idInput) idInput.readOnly = false;
+    }
 
     function editCam(id) {
       const c = cameras[id];
-      document.getElementById("inpCamId").value = id;
+      if (!c) return;
+      editingCamId = id;
+      const idInput = document.getElementById("inpCamId");
+      idInput.value = id;
+      idInput.readOnly = true;
+      idInput.title = "Không đổi mã camera khi đang sửa";
       document.getElementById("inpCamName").value = c.name || "";
       const brandSel = document.getElementById("inpBrand");
       brandSel.value = c.brand || "custom";
@@ -3683,8 +3731,9 @@
     }
 
     async function saveCamera() {
+      const editId = editingCamId;
       const payload = {
-        cam_id: document.getElementById("inpCamId").value.trim(),
+        cam_id: editId || document.getElementById("inpCamId").value.trim(),
         name: document.getElementById("inpCamName").value.trim(),
         brand: document.getElementById("inpBrand").value,
         record_mode: document.getElementById("inpRecordMode").value,
@@ -3704,6 +3753,10 @@
       if (!payload.cam_id || !payload.name || !payload.rtsp_url) {
         return alert("Vui lòng điền đủ Mã Camera, Tên và đường dẫn RTSP!");
       }
+      if (!editId && cameras[payload.cam_id]) {
+        return alert(`Mã camera "${payload.cam_id}" đã tồn tại. Chọn mã khác hoặc bấm Sửa đúng camera đó.`);
+      }
+      const wasCurrent = currentCam === payload.cam_id;
       const res = await fetch("api/cameras", {
         method: "POST",
         headers: {"Content-Type": "application/json"},
@@ -3715,21 +3768,43 @@
         return alert("Lưu camera thất bại: " + msg);
       }
       closeCamModal();
-      await init();
-      if (cameras[payload.cam_id]) {
+      const preferred = (editId && !wasCurrent) ? currentCam : payload.cam_id;
+      const selected = await refreshCameras(preferred);
+      renderCamList();
+      if (!selected) return;
+      if (!editId || wasCurrent) {
         currentCam = payload.cam_id;
         document.getElementById("camSelect").value = payload.cam_id;
+        await refreshSnapshots();
         renderCamStrip();
         await loadTimeline();
         playLive();
+      } else {
+        renderCamStrip();
       }
     }
 
     async function removeCam(id) {
       if (!confirm(`Xóa camera ${id}?`)) return;
+      const wasCurrent = currentCam === id;
       await fetch(`api/cameras/${id}`, {method: "DELETE"});
-      await init();
-      openCamModal();
+      const selected = await refreshCameras(wasCurrent ? "" : currentCam);
+      renderCamList();
+      if (!selected) {
+        document.getElementById("statusText").textContent = isAdmin() ? "Chưa có camera. Bấm ⚙️ → Quản lý Camera để thêm." : "Chưa có camera được cấp quyền.";
+        openCamModal();
+        return;
+      }
+      if (wasCurrent) {
+        currentCam = selected;
+        document.getElementById("camSelect").value = selected;
+        await refreshSnapshots();
+        renderCamStrip();
+        await loadTimeline();
+        playLive();
+      } else {
+        renderCamStrip();
+      }
     }
 
     function toggleBulk() {
@@ -3763,7 +3838,9 @@
       const d = await r.json();
       alert(`Đã thêm ${d.added} camera.`);
       closeCamModal();
-      await init();
+      await refreshCameras();
+      renderCamList();
+      renderCamStrip();
     }
 
     let onvifDevices = [];
@@ -4026,8 +4103,15 @@
         let d = {};
         try { d = await r.json(); } catch (e) {}
         if (!r.ok) throw new Error(d.detail || ("HTTP " + r.status));
-        await init();
+        const hadCurrent = currentCam && cameras[currentCam];
+        await refreshCameras(hadCurrent ? currentCam : "");
         renderCamList();
+        await refreshSnapshots();
+        renderCamStrip();
+        if (!hadCurrent && currentCam) {
+          await loadTimeline();
+          playLive();
+        }
         onvifRenderDevices();
         const added = d.added || 0;
         const failures = (d.results || []).filter(x => x.status !== "added");
