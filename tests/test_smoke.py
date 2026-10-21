@@ -430,6 +430,8 @@ class ApiTests(_AppCase):
         sysinfo = self.client.get("/api/system", headers=auth()).json()
         self.assertEqual(sysinfo["min_free_percent"], 4.0)
         self.assertIn("recording_paused", sysinfo)
+        self.assertGreaterEqual(sysinfo["host"]["cpu_count"], 1)
+        self.assertIn("uptime_sec", sysinfo["host"])
         self.client.delete("/api/cameras/camGB", headers=auth())
 
     def test_session_list_and_revoke(self):

@@ -537,46 +537,71 @@
       cursor: pointer;
     }
 
-    /* ================= STATS TELEMETRY BAR ================= */
-    .stats-bar {
-      display: flex;
-      align-items: center;
-      flex-wrap: wrap;
-      gap: 7px;
+    /* ================= RESOURCE CARDS ================= */
+    .resource-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
       max-width: var(--max-w);
       margin: 10px auto 0;
       padding: 0 16px;
       animation: fadeSlideUp 0.35s var(--ease-out) both;
     }
 
-    .stat-chip {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      min-height: 32px;
-      padding: 5px 9px;
-      border-radius: 999px;
+    .resource-card {
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+      min-width: 0;
+      padding: 9px 12px;
+      border-radius: 12px;
       border: 1px solid var(--border-subtle);
       background: var(--glass-card);
       color: var(--text-muted);
-      box-shadow: 0 3px 10px rgba(0, 0, 0, 0.12);
-      font-size: 11.5px;
-      line-height: 1;
-      cursor: pointer;
-      transition: transform 0.16s var(--ease-out), color 0.16s, border-color 0.16s, background-color 0.16s;
+      box-shadow: 0 3px 12px rgba(0, 0, 0, 0.12);
+      text-align: left;
+      transition: transform 0.16s var(--ease-out), color 0.16s, border-color 0.16s, background-color 0.16s, box-shadow 0.16s;
     }
 
-    .stat-chip:hover {
+    .resource-card:hover {
       transform: translateY(-1px);
       color: var(--text-main);
       border-color: var(--border-hover);
       background: var(--bg-hover);
+      box-shadow: 0 7px 18px rgba(0, 0, 0, 0.2);
     }
 
-    .stat-chip svg {
-      width: 14px;
-      height: 14px;
+    .resource-card[aria-expanded="true"] {
+      border-color: rgba(var(--accent-rgb), 0.5);
+      box-shadow: 0 0 0 1px rgba(var(--accent-rgb), 0.15), 0 7px 18px rgba(0, 0, 0, 0.2);
+    }
+
+    [data-theme="light"] .resource-card:hover {
+      box-shadow: 0 7px 18px rgba(15, 23, 42, 0.12);
+    }
+
+    .resource-top {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      min-width: 0;
+    }
+
+    .resource-icon {
+      display: grid;
+      place-items: center;
+      width: 27px;
+      height: 27px;
       flex: none;
+      border-radius: 8px;
+      background: var(--glass-hi);
+      border: 1px solid var(--border-subtle);
+      color: var(--accent-text);
+    }
+
+    .resource-icon svg {
+      width: 15px;
+      height: 15px;
       stroke: currentColor;
       fill: none;
       stroke-width: 1.8;
@@ -584,29 +609,58 @@
       stroke-linejoin: round;
     }
 
-    .stat-chip-label {
+    .resource-label {
+      min-width: 0;
       color: var(--text-dim);
-      font-weight: 600;
-      letter-spacing: 0.04em;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
     }
 
-    .stat-chip-value {
+    .resource-value {
+      margin-left: auto;
       color: var(--text-main);
-      font-size: 12.5px;
+      font-size: 18px;
       font-weight: 700;
+      line-height: 1;
       font-variant-numeric: tabular-nums;
     }
 
+    .resource-sub {
+      overflow: hidden;
+      color: var(--text-dim);
+      font-size: 10.5px;
+      line-height: 1.35;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .resource-card .bar {
+      height: 4px;
+      margin-top: 1px;
+    }
+
     .stats-detail-box {
-      max-width: 980px;
+      max-width: 720px;
     }
 
     .stats-detail-head {
       display: flex;
-      align-items: center;
+      align-items: flex-start;
       justify-content: space-between;
       gap: 12px;
-      margin-bottom: 14px;
+      margin-bottom: 12px;
+    }
+
+    .stats-kicker {
+      margin-bottom: 3px;
+      color: var(--text-dim);
+      font-size: 10.5px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
     }
 
     .stats-detail-head h3 {
@@ -615,18 +669,199 @@
       border: 0;
     }
 
-    .stats-detail-grid {
-      display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
+    .stats-tabs {
+      display: flex;
+      gap: 4px;
+      margin-bottom: 12px;
+      padding: 4px;
+      border: 1px solid var(--border-subtle);
+      border-radius: 12px;
+      background: var(--bg-elevated);
+    }
+
+    .stats-tabs [role="tab"] {
+      flex: 1 1 0;
+      min-height: 36px;
+      padding: 7px 10px;
+      border: 1px solid transparent;
+      border-radius: 8px;
+      background: transparent;
+      color: var(--text-muted);
+      font-size: 13px;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+
+    .stats-tabs [role="tab"]:hover {
+      background: var(--bg-hover);
+      color: var(--text-main);
+    }
+
+    .stats-tabs [role="tab"][aria-selected="true"] {
+      border-color: var(--border-subtle);
+      background: var(--glass-card);
+      color: var(--text-main);
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.14);
+    }
+
+    [data-theme="light"] .stats-tabs [role="tab"][aria-selected="true"] {
+      box-shadow: 0 2px 8px rgba(15, 23, 42, 0.08);
+    }
+
+    .stats-panel[hidden] {
+      display: none;
+    }
+
+    .stats-panel .stat-card {
+      gap: 8px;
+      padding: 16px 18px;
+    }
+
+    .stats-panel .stat-card:hover {
+      transform: none;
+      border-color: var(--border-subtle);
+      box-shadow: var(--shadow-card);
+    }
+
+    .stats-summary {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
       gap: 12px;
     }
 
-    .stats-detail-grid .stat-card {
-      min-width: 0;
+    .stats-summary-label {
+      color: var(--text-muted);
+      font-size: 11.5px;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
     }
 
-    .stats-detail-grid .stat-card canvas {
+    .stats-panel .stat-value,
+    .stats-panel #cpuVal,
+    .stats-panel #ramVal,
+    .stats-panel #diskVal {
+      color: var(--text-main);
+      font-size: 30px;
+      font-weight: 700;
+      line-height: 1;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .stats-panel .stat-sub {
+      margin-top: -2px;
+    }
+
+    .stats-panel .stat-card canvas {
       height: 64px;
+      margin-top: 4px;
+    }
+
+    .stats-chart-label {
+      color: var(--text-dim);
+      font-size: 10.5px;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    .stats-kv {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 0 20px;
+      margin: 6px 0 0;
+    }
+
+    .stats-kv-row {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 12px;
+      min-width: 0;
+      padding: 8px 0;
+      border-top: 1px solid var(--border-subtle);
+    }
+
+    .stats-kv dt {
+      color: var(--text-dim);
+      font-size: 11.5px;
+      line-height: 1.35;
+    }
+
+    .stats-kv dd {
+      min-width: 0;
+      margin: 0;
+      color: var(--text-main);
+      font-size: 12px;
+      font-weight: 600;
+      text-align: right;
+      overflow-wrap: anywhere;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .stats-list-block {
+      margin-top: 8px;
+      padding-top: 10px;
+      border-top: 1px solid var(--border-subtle);
+    }
+
+    .stats-list-title {
+      margin-bottom: 4px;
+      color: var(--text-muted);
+      font-size: 11.5px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    .stats-list-row {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 12px;
+      min-width: 0;
+      padding: 6px 0;
+      border-bottom: 1px solid var(--border-subtle);
+      font-size: 12px;
+    }
+
+    .stats-list-row:last-child {
+      border-bottom: 0;
+    }
+
+    .stats-list-name {
+      min-width: 0;
+      overflow: hidden;
+      color: var(--text-main);
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .stats-list-meta {
+      flex: none;
+      color: var(--text-dim);
+      font-size: 11.5px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .stats-empty,
+    .stats-admin-note {
+      color: var(--text-dim);
+      font-size: 11.5px;
+      line-height: 1.45;
+    }
+
+    .stats-admin-note {
+      margin: -2px 0 10px;
+      padding: 8px 10px;
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
+      background: var(--glass-hi);
+    }
+
+    .stats-admin-note[hidden] {
+      display: none;
     }
 
     .stats-detail-foot {
@@ -1900,14 +2135,29 @@
     /* ================= MOBILE RESPONSIVE ================= */
     @media (max-width: 640px) {
       .topbar { padding: 10px 14px; }
-      .stats-bar { gap: 6px; margin-top: 8px; padding: 0 10px; }
-      .stat-chip { flex: 1 1 0; justify-content: center; padding: 6px 7px; }
-      .stats-detail-grid { grid-template-columns: 1fr; }
+      .resource-grid { gap: 6px; margin-top: 8px; padding: 0 10px; }
+      .resource-card { gap: 4px; padding: 7px 8px; border-radius: 10px; }
+      .resource-icon { width: 22px; height: 22px; border-radius: 6px; }
+      .resource-icon svg { width: 13px; height: 13px; }
+      .resource-label { font-size: 9px; letter-spacing: 0.05em; }
+      .resource-value { font-size: 15px; }
+      .resource-sub { display: none; }
+      .resource-card .bar { height: 3px; }
+      .stats-detail-box { padding: 16px 14px; }
+      .stats-detail-head { margin-bottom: 10px; }
+      .stats-tabs { margin-bottom: 10px; }
+      .stats-tabs [role="tab"] { min-height: 40px; padding: 8px 6px; font-size: 12.5px; }
+      .stats-panel .stat-card { padding: 12px; gap: 6px; border-radius: 10px; }
+      .stats-panel .stat-card canvas { display: block; height: 52px; }
+      .stats-panel .stat-value,
+      .stats-panel #cpuVal,
+      .stats-panel #ramVal,
+      .stats-panel #diskVal { font-size: 26px; }
+      .stats-kv { grid-template-columns: 1fr; gap: 0; }
+      .stats-kv-row { padding: 7px 0; }
+      .stats-detail-foot { font-size: 10.5px; }
       .stat-card { padding: 8px 9px; gap: 4px; border-radius: 8px; }
-      .stat-card:last-child { grid-column: auto; }
-      .stat-card canvas { display: none; }
       .stat-head { font-size: 9.5px; letter-spacing: 0.3px; gap: 4px; }
-      .stat-value, #cpuVal, #ramVal, #diskVal { font-size: 14.5px; }
       .stat-sub { font-size: 10px; }
       .bar { height: 5px; margin-top: 2px; }
       .cam-strip { grid-template-columns: repeat(2, 1fr); gap: 8px; margin-top: 10px; padding: 0 10px; }
@@ -1958,6 +2208,12 @@
     @media (max-width: 360px) {
       .cam-method-tabs { gap: 8px; }
       .cam-method-tabs [role="tab"] { font-size: 12.5px; }
+      .resource-grid { gap: 5px; padding: 0 8px; }
+      .resource-card { gap: 3px; padding: 6px; }
+      .resource-top { gap: 5px; }
+      .resource-icon { width: 20px; height: 20px; }
+      .resource-label { font-size: 8.5px; }
+      .resource-value { font-size: 14px; }
     }
 
     @media (prefers-reduced-motion: no-preference) {
@@ -2089,18 +2345,33 @@
     </div>
   </header>
 
-  <section class="stats-bar" id="statsBar" aria-label="Tài nguyên hệ thống">
-    <button class="stat-chip" id="cpuChip" type="button" onclick="openStatsModal(event)" aria-haspopup="dialog" aria-controls="statsModal" aria-expanded="false" title="CPU - bấm xem chi tiết">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="2"/><path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3"/></svg>
-      <span class="stat-chip-label">CPU</span><span class="stat-chip-value" id="cpuChipVal">--</span>
+  <section class="resource-grid" id="statsBar" aria-label="Tài nguyên hệ thống">
+    <button class="resource-card" id="cpuChip" type="button" onclick="openStatsModal(event, 'cpu')" aria-haspopup="dialog" aria-controls="statsModal" aria-expanded="false" title="CPU - bấm xem chi tiết">
+      <span class="resource-top">
+        <span class="resource-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="2"/><path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3"/></svg></span>
+        <span class="resource-label">CPU</span>
+        <span class="resource-value" id="cpuChipVal">--</span>
+      </span>
+      <span class="bar" aria-hidden="true" id="cpuChipBar"><i></i></span>
+      <span class="resource-sub" id="cpuChipSub">Đang tải…</span>
     </button>
-    <button class="stat-chip" id="ramChip" type="button" onclick="openStatsModal(event)" aria-haspopup="dialog" aria-controls="statsModal" aria-expanded="false" title="RAM - bấm xem chi tiết">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="7" width="18" height="10" rx="2"/><path d="M7 17v3M12 17v3M17 17v3M7 4v3M12 4v3M17 4v3"/></svg>
-      <span class="stat-chip-label">RAM</span><span class="stat-chip-value" id="ramChipVal">--</span>
+    <button class="resource-card" id="ramChip" type="button" onclick="openStatsModal(event, 'ram')" aria-haspopup="dialog" aria-controls="statsModal" aria-expanded="false" title="RAM - bấm xem chi tiết">
+      <span class="resource-top">
+        <span class="resource-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="7" width="18" height="10" rx="2"/><path d="M7 17v3M12 17v3M17 17v3M7 4v3M12 4v3M17 4v3"/></svg></span>
+        <span class="resource-label">RAM</span>
+        <span class="resource-value" id="ramChipVal">--</span>
+      </span>
+      <span class="bar" aria-hidden="true" id="ramChipBar"><i></i></span>
+      <span class="resource-sub" id="ramChipSub">Đang tải…</span>
     </button>
-    <button class="stat-chip" id="diskChip" type="button" onclick="openStatsModal(event)" aria-haspopup="dialog" aria-controls="statsModal" aria-expanded="false" title="SSD - bấm xem chi tiết">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 7h8M8 11h8M8 15h5"/></svg>
-      <span class="stat-chip-label">SSD</span><span class="stat-chip-value" id="diskChipVal">--</span>
+    <button class="resource-card" id="diskChip" type="button" onclick="openStatsModal(event, 'disk')" aria-haspopup="dialog" aria-controls="statsModal" aria-expanded="false" title="SSD - bấm xem chi tiết">
+      <span class="resource-top">
+        <span class="resource-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 7h8M8 11h8M8 15h5"/></svg></span>
+        <span class="resource-label">SSD</span>
+        <span class="resource-value" id="diskChipVal">--</span>
+      </span>
+      <span class="bar" aria-hidden="true" id="diskChipBar"><i></i></span>
+      <span class="resource-sub" id="diskChipSub">Đang tải…</span>
     </button>
   </section>
 
@@ -2482,32 +2753,94 @@
   <div class="modal" id="statsModal">
     <div class="modal-box stats-detail-box" role="dialog" aria-modal="true" aria-labelledby="statsTitle">
       <div class="stats-detail-head">
-        <h3 id="statsTitle">Tài nguyên hệ thống</h3>
+        <div>
+          <div class="stats-kicker">Tài nguyên hệ thống</div>
+          <h3 id="statsTitle">Chi tiết CPU</h3>
+        </div>
         <button class="icon-btn" id="btnCloseStats" type="button" onclick="closeStatsModal()" aria-label="Đóng chi tiết tài nguyên">✕</button>
       </div>
-      <div class="stats-detail-grid">
+      <div class="stats-tabs" role="tablist" aria-label="Chọn tài nguyên">
+        <button id="statsTabCpu" type="button" role="tab" aria-selected="true" aria-controls="statsPanelCpu" tabindex="0" onclick="selectStatsTab('cpu')" onkeydown="statsTabKey(event)">CPU</button>
+        <button id="statsTabRam" type="button" role="tab" aria-selected="false" aria-controls="statsPanelRam" tabindex="-1" onclick="selectStatsTab('ram')" onkeydown="statsTabKey(event)">RAM</button>
+        <button id="statsTabDisk" type="button" role="tab" aria-selected="false" aria-controls="statsPanelDisk" tabindex="-1" onclick="selectStatsTab('disk')" onkeydown="statsTabKey(event)">SSD</button>
+      </div>
+      <p class="stats-admin-note" id="statsAdminNote" hidden>Một số chi tiết tiến trình và cấu hình chỉ hiển thị với tài khoản quản trị.</p>
+
+      <div class="stats-panel" id="statsPanelCpu" role="tabpanel" aria-labelledby="statsTabCpu">
         <div class="stat-card">
-          <div class="stat-head"><span>CPU</span><span id="cpuVal">--</span></div>
+          <div class="stats-summary"><span class="stats-summary-label">Mức sử dụng CPU</span><span class="stat-value" id="cpuVal">--</span></div>
           <div class="bar" id="cpuBar"><i></i></div>
-          <canvas id="cpuChart" width="480" height="64" aria-label="Biểu đồ CPU"></canvas>
           <div class="stat-sub" id="cpuSub">toàn hệ thống</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-head"><span>RAM</span><span id="ramVal">--</span></div>
-          <div class="bar" id="ramBar"><i></i></div>
-          <canvas id="ramChart" width="480" height="64" aria-label="Biểu đồ RAM"></canvas>
-          <div class="stat-sub" id="ramSub">--</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-head"><span>SSD / Lưu trữ</span><span id="diskVal">--</span></div>
-          <div class="bar" id="diskBar"><i></i></div>
-          <canvas id="diskChart" width="480" height="64" aria-label="Biểu đồ dung lượng SSD"></canvas>
-          <div class="stat-sub" id="diskSub">--</div>
+          <div class="stats-chart-label">Lịch sử gần đây</div>
+          <canvas id="cpuChart" width="480" height="64" role="img" aria-label="Biểu đồ CPU gần đây"></canvas>
+          <dl class="stats-kv">
+            <div class="stats-kv-row"><dt>Tải 1 / 5 / 15 phút</dt><dd id="cpuLoad">--</dd></div>
+            <div class="stats-kv-row"><dt>Tải theo số nhân</dt><dd id="cpuLoadPct">--</dd></div>
+            <div class="stats-kv-row"><dt>Số nhân CPU</dt><dd id="cpuCores">--</dd></div>
+            <div class="stats-kv-row"><dt>Tổng CPU ffmpeg</dt><dd id="cpuCamTotal">--</dd></div>
+            <div class="stats-kv-row"><dt>Camera đang xử lý</dt><dd id="cpuCamCount">--</dd></div>
+            <div class="stats-kv-row"><dt>Máy chủ hoạt động</dt><dd id="hostUptime">--</dd></div>
+          </dl>
+          <div class="stats-list-block">
+            <div class="stats-list-title">Tiến trình camera</div>
+            <div id="cpuCamList"><div class="stats-empty">Đang tải…</div></div>
+          </div>
         </div>
       </div>
+
+      <div class="stats-panel" id="statsPanelRam" role="tabpanel" aria-labelledby="statsTabRam" hidden>
+        <div class="stat-card">
+          <div class="stats-summary"><span class="stats-summary-label">RAM đã dùng toàn máy</span><span class="stat-value" id="ramVal">--</span></div>
+          <div class="bar" id="ramBar"><i></i></div>
+          <div class="stat-sub" id="ramSub">--</div>
+          <div class="stats-chart-label">Lịch sử gần đây</div>
+          <canvas id="ramChart" width="480" height="64" role="img" aria-label="Biểu đồ RAM gần đây"></canvas>
+          <dl class="stats-kv">
+            <div class="stats-kv-row"><dt>Đã dùng / tổng RAM</dt><dd id="ramDetailUsed">--</dd></div>
+            <div class="stats-kv-row"><dt>Còn trống</dt><dd id="ramDetailFree">--</dd></div>
+            <div class="stats-kv-row"><dt>LiteNVR (container)</dt><dd id="ramDetailContainer">--</dd></div>
+            <div class="stats-kv-row"><dt>Tiến trình chính (app)</dt><dd id="ramDetailApp">--</dd></div>
+            <div class="stats-kv-row"><dt>Tiến trình con</dt><dd id="ramDetailChildren">--</dd></div>
+            <div class="stats-kv-row"><dt>Giới hạn container</dt><dd id="ramDetailLimit">--</dd></div>
+            <div class="stats-kv-row"><dt>Bộ đệm HLS + motion</dt><dd id="ramDetailBuffers">--</dd></div>
+            <div class="stats-kv-row"><dt>Ảnh thu nhỏ</dt><dd id="ramDetailThumbs">--</dd></div>
+            <div class="stats-kv-row"><dt>Page cache (cgroup)</dt><dd id="ramDetailFile">--</dd></div>
+            <div class="stats-kv-row"><dt>Shared memory</dt><dd id="ramDetailShmem">--</dd></div>
+          </dl>
+          <div class="stats-list-block">
+            <div class="stats-list-title">Tiến trình con theo RAM</div>
+            <div id="ramProcList"><div class="stats-empty">Đang tải…</div></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="stats-panel" id="statsPanelDisk" role="tabpanel" aria-labelledby="statsTabDisk" hidden>
+        <div class="stat-card">
+          <div class="stats-summary"><span class="stats-summary-label">Dung lượng SSD đã dùng</span><span class="stat-value" id="diskVal">--</span></div>
+          <div class="bar" id="diskBar"><i></i></div>
+          <div class="stat-sub" id="diskSub">--</div>
+          <div class="stats-chart-label">Lịch sử gần đây</div>
+          <canvas id="diskChart" width="480" height="64" role="img" aria-label="Biểu đồ dung lượng SSD gần đây"></canvas>
+          <dl class="stats-kv">
+            <div class="stats-kv-row"><dt>Đã dùng / tổng dung lượng</dt><dd id="diskDetailUsed">--</dd></div>
+            <div class="stats-kv-row"><dt>Còn trống</dt><dd id="diskDetailFree">--</dd></div>
+            <div class="stats-kv-row"><dt>Dữ liệu LiteNVR</dt><dd id="diskDetailNvr">--</dd></div>
+            <div class="stats-kv-row"><dt>Số ngày lưu</dt><dd id="diskDetailRetention">--</dd></div>
+            <div class="stats-kv-row"><dt>Giới hạn dung lượng</dt><dd id="diskDetailMax">--</dd></div>
+            <div class="stats-kv-row"><dt>Ngưỡng tự xoá</dt><dd id="diskDetailMaxPct">--</dd></div>
+            <div class="stats-kv-row"><dt>Chừa trống tối thiểu</dt><dd id="diskDetailMinFree">--</dd></div>
+            <div class="stats-kv-row"><dt>Trạng thái ghi hình</dt><dd id="diskDetailStatus">--</dd></div>
+            <div class="stats-kv-row"><dt>Inode đã dùng</dt><dd id="diskDetailInodes">--</dd></div>
+            <div class="stats-kv-row"><dt>Quyền ghi</dt><dd id="diskDetailWritable">--</dd></div>
+            <div class="stats-kv-row"><dt>SMART</dt><dd id="diskDetailSmart">--</dd></div>
+            <div class="stats-kv-row"><dt>Thư mục lưu</dt><dd id="diskDetailPath">--</dd></div>
+          </dl>
+        </div>
+      </div>
+
       <div class="stats-detail-foot">
         <span id="statsUpdated">Đang cập nhật…</span>
-        <span>Nhấn Esc để đóng</span>
+        <span>Tự cập nhật mỗi 2 giây</span>
       </div>
     </div>
   </div>
@@ -3169,6 +3502,170 @@
       const el = document.getElementById(id);
       if (el) el.textContent = text;
     }
+    const statsNum = (value, digits = 1) => {
+      if (value == null || value === "") return "--";
+      const n = Number(value);
+      if (!Number.isFinite(n)) return "--";
+      return n.toLocaleString("vi-VN", { maximumFractionDigits: digits });
+    };
+    const statsDuration = (seconds) => {
+      const total = Math.max(0, Math.floor(Number(seconds) || 0));
+      if (!total) return "--";
+      const days = Math.floor(total / 86400);
+      const hours = Math.floor((total % 86400) / 3600);
+      const mins = Math.floor((total % 3600) / 60);
+      if (days) return `${days} ngày ${hours} giờ`;
+      if (hours) return `${hours} giờ ${mins} phút`;
+      return `${mins} phút`;
+    };
+    const statsCamName = (camId) => (cameras[camId] && cameras[camId].name) || camId;
+
+    const STATS_TABS = {
+      cpu: { tab: "statsTabCpu", panel: "statsPanelCpu", title: "Chi tiết CPU" },
+      ram: { tab: "statsTabRam", panel: "statsPanelRam", title: "Chi tiết RAM" },
+      disk: { tab: "statsTabDisk", panel: "statsPanelDisk", title: "Chi tiết SSD" }
+    };
+    let activeStatsTab = "cpu";
+
+    function selectStatsTab(name, focus) {
+      if (!STATS_TABS[name]) name = "cpu";
+      activeStatsTab = name;
+      Object.entries(STATS_TABS).forEach(([key, meta]) => {
+        const tab = document.getElementById(meta.tab);
+        const panel = document.getElementById(meta.panel);
+        const selected = key === name;
+        if (tab) {
+          tab.setAttribute("aria-selected", selected ? "true" : "false");
+          tab.tabIndex = selected ? 0 : -1;
+        }
+        if (panel) panel.hidden = !selected;
+      });
+      setStatText("statsTitle", STATS_TABS[name].title);
+      if (focus) {
+        const tab = document.getElementById(STATS_TABS[name].tab);
+        if (tab) tab.focus();
+      }
+    }
+
+    function statsTabKey(ev) {
+      const order = ["cpu", "ram", "disk"];
+      const i = order.indexOf(activeStatsTab);
+      let next = "";
+      if (ev.key === "ArrowRight" || ev.key === "ArrowDown") next = order[(i + 1) % order.length];
+      else if (ev.key === "ArrowLeft" || ev.key === "ArrowUp") next = order[(i + order.length - 1) % order.length];
+      else if (ev.key === "Home") next = order[0];
+      else if (ev.key === "End") next = order[order.length - 1];
+      if (!next) return;
+      ev.preventDefault();
+      selectStatsTab(next, true);
+    }
+
+    function renderStatsDetails() {
+      const cur = latestStats || {};
+      const sys = sysInfo || {};
+      const host = sys.host || {};
+      const mm = sys.memory || {};
+      const dh = sys.disk_health || {};
+      const admin = !!(sysInfo && Object.keys(sysInfo).length);
+      const cores = Number(host.cpu_count) || 0;
+      const camCpu = Object.entries(cur.cam_cpu || {}).sort((a, b) => Number(b[1]) - Number(a[1]));
+      const camHealth = cur.cam_health || {};
+      const camCpuTotal = camCpu.reduce((sum, [, value]) => sum + (Number(value) || 0), 0);
+
+      const adminNote = document.getElementById("statsAdminNote");
+      if (adminNote) adminNote.hidden = admin;
+
+      setStatText("cpuCores", cores ? `${cores} nhân` : (admin ? "Không xác định" : "Cần quyền quản trị"));
+      if (host.load1 != null) {
+        setStatText("cpuLoad", `${statsNum(host.load1, 2)} / ${statsNum(host.load5, 2)} / ${statsNum(host.load15, 2)}`);
+        setStatText("cpuLoadPct", cores ? `${statsNum((Number(host.load1) / cores) * 100, 0)}%` : "--");
+      } else {
+        setStatText("cpuLoad", admin ? "Không có dữ liệu" : "Cần quyền quản trị");
+        setStatText("cpuLoadPct", "--");
+      }
+      setStatText("hostUptime", admin ? statsDuration(host.uptime_sec) : "Cần quyền quản trị");
+      setStatText("cpuCamTotal", camCpu.length ? `${statsNum(camCpuTotal, 1)}%` : "0%");
+      setStatText("cpuCamCount", `${camCpu.length} camera`);
+
+      const cpuList = document.getElementById("cpuCamList");
+      if (cpuList) {
+        cpuList.innerHTML = camCpu.length ? camCpu.map(([camId, value]) => {
+          const h = camHealth[camId] || {};
+          const bits = [`${statsNum(value, 1)}% CPU`];
+          if (h.fps != null) bits.push(`${statsNum(h.fps, 1)} fps`);
+          if (h.stalled) bits.push("đứng hình");
+          return `<div class="stats-list-row"><span class="stats-list-name">${esc(statsCamName(camId))}</span><span class="stats-list-meta">${esc(bits.join(" · "))}</span></div>`;
+        }).join("") : `<div class="stats-empty">Không có tiến trình camera đang chạy.</div>`;
+      }
+
+      const usedMb = Number(cur.mem_used_mb) || 0;
+      const totalMb = Number(cur.mem_total_mb) || 0;
+      setStatText("ramDetailUsed", `${statsNum(usedMb / 1024, 1)} / ${statsNum(totalMb / 1024, 1)} GB`);
+      setStatText("ramDetailFree", `${statsNum(Math.max(0, totalMb - usedMb) / 1024, 1)} GB`);
+      const mb = (value) => value == null ? "--" : `${statsNum(value, 1)} MB`;
+      const adminOnly = (id) => setStatText(id, admin ? "--" : "Cần quyền quản trị");
+      if (admin) {
+        setStatText("ramDetailContainer", mb(mm.container_used_mb));
+        setStatText("ramDetailApp", mb(mm.app_rss_mb));
+        setStatText("ramDetailChildren", mb(mm.children_mb));
+        setStatText("ramDetailLimit", mm.container_limit_mb ? mb(mm.container_limit_mb) : "Không giới hạn");
+        const buffers = (Number(mm.hls_dir_mb) || 0) + (Number(mm.buffer_dir_mb) || 0);
+        setStatText("ramDetailBuffers", mm.hls_dir_mb == null && mm.buffer_dir_mb == null ? "--" : `${statsNum(buffers, 1)} MB`);
+        setStatText("ramDetailThumbs", mb(mm.thumb_dir_mb));
+        setStatText("ramDetailFile", mb(mm.cgroup_file_mb));
+        setStatText("ramDetailShmem", mb(mm.cgroup_shmem_mb));
+      } else {
+        ["ramDetailContainer", "ramDetailApp", "ramDetailChildren", "ramDetailLimit",
+         "ramDetailBuffers", "ramDetailThumbs", "ramDetailFile", "ramDetailShmem"].forEach(adminOnly);
+      }
+
+      const ramList = document.getElementById("ramProcList");
+      if (ramList) {
+        const procs = admin && Array.isArray(mm.children) ? mm.children : [];
+        if (!admin) {
+          ramList.innerHTML = `<div class="stats-empty">Cần quyền quản trị để xem tiến trình.</div>`;
+        } else if (!procs.length) {
+          ramList.innerHTML = `<div class="stats-empty">Không có tiến trình con.</div>`;
+        } else {
+          const roleNames = { camera: "Camera", snapshot: "Ảnh nhanh", playback: "Xem lại", other: "Khác" };
+          ramList.innerHTML = procs.map((p) => {
+            const name = p.role === "camera" && p.cam_id ? statsCamName(p.cam_id) : (p.name || "Tiến trình");
+            const bits = [roleNames[p.role] || "Khác", `${statsNum(p.rss_mb, 1)} MB`];
+            if (p.threads) bits.push(`${p.threads} luồng`);
+            return `<div class="stats-list-row"><span class="stats-list-name">${esc(name)}</span><span class="stats-list-meta">${esc(bits.join(" · "))}</span></div>`;
+          }).join("");
+        }
+      }
+
+      const diskTotal = Number(dh.total_gb ?? cur.disk_total_gb) || 0;
+      const diskUsed = Number(dh.used_gb ?? cur.disk_used_gb) || 0;
+      const diskFree = Number(dh.free_gb ?? cur.disk_free_gb) || 0;
+      setStatText("diskDetailUsed", `${statsNum(diskUsed, 1)} / ${statsNum(diskTotal, 1)} GB`);
+      setStatText("diskDetailFree", `${statsNum(diskFree, 1)} GB`);
+      if (admin) {
+        setStatText("diskDetailNvr", `${statsNum(sys.nvr_used_gb, 2)} GB`);
+        setStatText("diskDetailRetention", `${statsNum(sys.retention_days, 1)} ngày`);
+        setStatText("diskDetailMax", Number(sys.max_storage_gb) > 0 ? `${statsNum(sys.max_storage_gb, 0)} GB` : "Không giới hạn");
+        setStatText("diskDetailMaxPct", `${statsNum(sys.max_disk_percent, 0)}%`);
+        setStatText("diskDetailMinFree", `${statsNum(sys.min_free_percent, 0)}%`);
+        setStatText("diskDetailStatus", sys.recording_paused ? "Tạm dừng do thiếu chỗ" : "Đang ghi bình thường");
+        setStatText("diskDetailInodes", dh.inodes_percent == null ? "--" : `${statsNum(dh.inodes_percent, 1)}% (${statsNum(dh.inodes_used, 0)} / ${statsNum(dh.inodes_total, 0)})`);
+        setStatText("diskDetailWritable", dh.writable ? "Có" : "Không");
+        const smart = dh.smart || {};
+        let smartText = "Không khả dụng";
+        if (smart.available) {
+          const health = smart.health === "PASSED" ? "Tốt" : (smart.health || "Không rõ");
+          smartText = health + (smart.temperature_c != null ? ` · ${smart.temperature_c}°C` : "");
+        } else if (smart.note) {
+          smartText = smart.note;
+        }
+        setStatText("diskDetailSmart", smartText);
+        setStatText("diskDetailPath", dh.path || "--");
+      } else {
+        ["diskDetailNvr", "diskDetailRetention", "diskDetailMax", "diskDetailMaxPct", "diskDetailMinFree",
+         "diskDetailStatus", "diskDetailInodes", "diskDetailWritable", "diskDetailSmart", "diskDetailPath"].forEach(adminOnly);
+      }
+    }
 
     function applyStats(cur) {
       if (!cur) return;
@@ -3190,15 +3687,13 @@
       setBar("cpuBar", cpu);
       setBar("ramBar", mem);
       setBar("diskBar", disk);
+      setBar("cpuChipBar", cpu);
+      setBar("ramChipBar", mem);
+      setBar("diskChipBar", disk);
 
-      const camCpu = Object.entries(cur.cam_cpu || {});
-      const health = Object.entries(cur.cam_health || {}).map(([c, h]) => {
-        if (h && h.stalled) return `${c} ⏸ đứng`;
-        if (h && h.fps != null) return `${c} ${Number(h.fps).toFixed(1)}fps`;
-        return null;
-      }).filter(Boolean);
-      const cpuSub = (camCpu.length ? camCpu.map(([c, v]) => `${c} ${v}%`).join(" · ") : "toàn hệ thống") +
-        (health.length ? " · " + health.join(" · ") : "");
+      const camCpu = Object.entries(cur.cam_cpu || {}).sort((a, b) => Number(b[1]) - Number(a[1]));
+      const camHealth = cur.cam_health || {};
+      const cpuSub = camCpu.length ? camCpu.map(([c, v]) => `${statsCamName(c)} ${statsNum(v, 1)}%`).join(" · ") : "toàn hệ thống";
       setStatText("cpuSub", cpuSub);
 
       const memUsedGb = (Number(cur.mem_used_mb) / 1024).toFixed(1);
@@ -3211,6 +3706,9 @@
       }
       setStatText("ramSub", ramSub);
       setStatText("diskSub", `${cur.disk_used_gb} / ${cur.disk_total_gb} GB · còn ${cur.disk_free_gb} GB`);
+      setStatText("cpuChipSub", camCpu.length ? `${camCpu.length} camera đang xử lý` : "Toàn hệ thống");
+      setStatText("ramChipSub", `${memUsedGb} / ${memTotalGb} GB`);
+      setStatText("diskChipSub", `Còn ${cur.disk_free_gb} GB`);
 
       const updated = new Date(((Number(cur.t) || Date.now() / 1000) * 1000)).toLocaleTimeString("vi-VN");
       setStatText("statsUpdated", "Cập nhật " + updated);
@@ -3221,20 +3719,23 @@
       if (cpuChip) cpuChip.title = `CPU ${cpuTxt} · bấm xem chi tiết`;
       if (ramChip) ramChip.title = `RAM ${memTxt} · ${memUsedGb}/${memTotalGb} GB · bấm xem chi tiết`;
       if (diskChip) diskChip.title = `SSD ${diskTxt} · còn ${cur.disk_free_gb} GB · bấm xem chi tiết`;
+
+      const modal = document.getElementById("statsModal");
+      if (modal && modal.classList.contains("open")) renderStatsDetails();
     }
 
     async function loadStats() {
       try {
-        const cur = await fetch("api/stats").then(r => r.json());
-        applyStats(cur);
+        const cur = await fetch("api/stats").then(r => r.ok ? r.json() : null);
+        if (cur) applyStats(cur);
       } catch (e) {}
     }
 
     async function loadStatsDetails() {
       try {
         const [hist, sys] = await Promise.all([
-          fetch("api/stats/history").then(r => r.json()),
-          fetch("api/system").then(r => r.json()).catch(() => null)
+          fetch("api/stats/history").then(r => r.ok ? r.json() : { samples: [] }).catch(() => ({ samples: [] })),
+          fetch("api/system").then(r => r.ok ? r.json() : null).catch(() => null)
         ]);
         const modal = document.getElementById("statsModal");
         if (!modal || !modal.classList.contains("open")) return;
@@ -3245,24 +3746,24 @@
         drawSpark(document.getElementById("cpuChart"), statsHist.cpu, "rgb(100,181,246)");
         drawSpark(document.getElementById("ramChart"), statsHist.mem, "rgb(129,199,132)");
         drawSpark(document.getElementById("diskChart"), statsHist.disk, "rgb(255,183,77)");
-        if (sys) {
-          sysInfo = sys;
-          if (latestStats) applyStats(latestStats);
-        }
+        if (sys) sysInfo = sys;
+        if (latestStats) applyStats(latestStats);
+        else renderStatsDetails();
       } catch (e) {}
     }
 
-    function openStatsModal(ev) {
+    function openStatsModal(ev, resource) {
       statsReturnFocus = (ev && ev.currentTarget) || document.activeElement;
       document.getElementById("statsModal").classList.add("open");
-      document.querySelectorAll(".stat-chip").forEach(btn => btn.setAttribute("aria-expanded", "true"));
+      document.querySelectorAll(".resource-card").forEach(btn => btn.setAttribute("aria-expanded", "true"));
+      selectStatsTab(resource || "cpu");
       loadStats();
       loadStatsDetails();
       if (statsDetailTimer) clearInterval(statsDetailTimer);
       statsDetailTimer = setInterval(loadStatsDetails, 2000);
       setTimeout(() => {
-        const btn = document.getElementById("btnCloseStats");
-        if (btn) btn.focus();
+        const tab = document.getElementById(STATS_TABS[activeStatsTab].tab);
+        if (tab) tab.focus();
       }, 30);
     }
 
@@ -3270,7 +3771,7 @@
       const modal = document.getElementById("statsModal");
       if (!modal || !modal.classList.contains("open")) return;
       modal.classList.remove("open");
-      document.querySelectorAll(".stat-chip").forEach(btn => btn.setAttribute("aria-expanded", "false"));
+      document.querySelectorAll(".resource-card").forEach(btn => btn.setAttribute("aria-expanded", "false"));
       if (statsDetailTimer) {
         clearInterval(statsDetailTimer);
         statsDetailTimer = null;

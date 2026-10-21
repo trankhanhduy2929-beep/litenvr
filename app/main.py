@@ -3080,7 +3080,13 @@ def _host_load():
         pass
     info = {"load1": load[0] if load else None,
             "load5": load[1] if len(load) > 1 else None,
-            "load15": load[2] if len(load) > 2 else None}
+            "load15": load[2] if len(load) > 2 else None,
+            "cpu_count": os.cpu_count() or 0}
+    try:
+        with open("/proc/uptime") as f:
+            info["uptime_sec"] = int(float(f.read().split()[0]))
+    except (OSError, ValueError, IndexError):
+        info["uptime_sec"] = None
     if mem_total:
         info["ram_total_gb"] = round(mem_total / (1024**3), 2)
         info["ram_used_gb"] = round((mem_total - mem_avail) / (1024**3), 2)
