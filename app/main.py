@@ -69,23 +69,27 @@ for d in [RECORDINGS_DIR, SNAPSHOTS_DIR, HLS_DIR, BUFFER_DIR]:
 
 # ---- Giám sát tài nguyên (CPU / RAM / ổ đĩa) cho dashboard ----
 _cpu_prev = {"idle": 0, "total": 0, "init": False}
-stats_history: deque = deque(maxlen=360)   # ~30 phút nếu lấy mẫu mỗi 5s
+stats_history: deque = deque(maxlen=360)   # ~6 phút nếu lấy mẫu mỗi 1 giây
+_stats_lock = threading.Lock()
+_cpu_lock = threading.Lock()
+latest_stats: dict = {}
 
 def read_cpu_percent() -> float:
-    try:
-        with open("/proc/stat", "r") as f:
-            parts = [int(x) for x in f.readline().split()[1:]]
-    except Exception:
-        return 0.0
-    idle = parts[3] + (parts[4] if len(parts) > 4 else 0)
-    total = sum(parts)
-    if not _cpu_prev["init"]:
-        _cpu_prev.update(idle=idle, total=total, init=True)
-        return 0.0
-    didle = idle - _cpu_prev["idle"]
-    dtotal = total - _cpu_prev["total"]
-    _cpu_prev.update(idle=idle, total=total)
-    return round(100.0 * (1 - didle / dtotal), 1) if dtotal > 0 else 0.0
+    with _cpu_lock:
+        try:
+            with open("/proc/stat", "r") as f:
+                parts = [int(x) for x in f.readline().split()[1:]]
+        except Exception:
+            return 0.0
+        idle = parts[3] + (parts[4] if len(parts) > 4 else 0)
+        total = sum(parts)
+        if not _cpu_prev["init"]:
+            _cpu_prev.update(idle=idle, total=total, init=True)
+            return 0.0
+        didle = idle - _cpu_prev["idle"]
+        dtotal = total - _cpu_prev["total"]
+        _cpu_prev.update(idle=idle, total=total)
+        return round(100.0 * (1 - didle / dtotal), 1) if dtotal > 0 else 0.0
 
 def read_mem() -> dict:
     info = {}
@@ -202,10 +206,15 @@ def collect_stats() -> dict:
 
 def stats_sampler():
     # Lấy mẫu đầu để có baseline CPU (lần đầu luôn trả 0)
-    collect_stats()
+    with _stats_lock:
+        latest_stats.update(collect_stats())
     while True:
-        stats_history.append(collect_stats())
-        time.sleep(5)
+        time.sleep(1)
+        sample = collect_stats()
+        with _stats_lock:
+            latest_stats.clear()
+            latest_stats.update(sample)
+            stats_history.append(sample)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -2966,11 +2975,16 @@ def manual_clean():
 
 @app.get("/api/stats")
 def api_stats():
+    with _stats_lock:
+        if latest_stats:
+            return dict(latest_stats)
     return collect_stats()
+
 
 @app.get("/api/stats/history")
 def api_stats_history():
-    return {"samples": list(stats_history)}
+    with _stats_lock:
+        return {"samples": list(stats_history)}
 
 @app.get("/api/latest_snapshots")
 def api_latest_snapshots(request: Request):
