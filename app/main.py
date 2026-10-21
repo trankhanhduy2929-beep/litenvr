@@ -53,7 +53,9 @@ SNAPSHOTS_DIR = os.path.join(STORAGE_DIR, "snapshots")
 DB_PATH = os.path.join(STORAGE_DIR, "nvr.db")
 HLS_DIR = "/dev/shm/hls"
 BUFFER_DIR = "/dev/shm/buffer"
-THUMBS_DIR = os.path.join(BUFFER_DIR, "thumbs")
+THUMBS_DIR = os.path.join(STORAGE_DIR, "thumbnails")
+LEGACY_THUMBS_DIR = os.path.join(BUFFER_DIR, "thumbs")
+THUMB_CACHE_MAX_MB = 256
 
 # Google Drive (24/7 backup) — các URL có thể override qua env để test bằng mock server
 DRIVE_OAUTH_BASE = os.environ.get("NVR_DRIVE_OAUTH_BASE", "https://oauth2.googleapis.com").rstrip("/")
@@ -64,7 +66,7 @@ DRIVE_TICK = float(os.environ.get("NVR_DRIVE_TICK", "20"))
 DRIVE_CHUNK = int(os.environ.get("NVR_DRIVE_CHUNK", str(16 * 1024 * 1024)))
 DRIVE_RETRY_BASE = float(os.environ.get("NVR_DRIVE_RETRY_BASE", "60"))
 
-for d in [RECORDINGS_DIR, SNAPSHOTS_DIR, HLS_DIR, BUFFER_DIR]:
+for d in [RECORDINGS_DIR, SNAPSHOTS_DIR, HLS_DIR, BUFFER_DIR, THUMBS_DIR]:
     os.makedirs(d, exist_ok=True)
 
 # ---- Giám sát tài nguyên (CPU / RAM / ổ đĩa) cho dashboard ----
@@ -225,6 +227,7 @@ async def lifespan(app: FastAPI):
             start_camera_worker(cam_id)
     threading.Thread(target=motion_buffer_manager, daemon=True).start()
     threading.Thread(target=cleanup_worker, daemon=True).start()
+    threading.Thread(target=ram_janitor, daemon=True).start()
     threading.Thread(target=drive_worker, daemon=True).start()
     threading.Thread(target=backup_worker, daemon=True).start()
     threading.Thread(target=hass_motion_listener, daemon=True).start()
@@ -994,7 +997,7 @@ motion_active_until: Dict[str, float] = {}
 # Ghi trước sự kiện chuyển động để clip không bị mất đầu (giây).
 MOTION_PREROLL_SEC = 10
 MOTION_BUFFER_SEGMENT_SEC = 15
-MOTION_BUFFER_KEEP_SEC = max(45, MOTION_PREROLL_SEC + MOTION_BUFFER_SEGMENT_SEC)
+MOTION_BUFFER_KEEP_SEC = max(30, MOTION_PREROLL_SEC + MOTION_BUFFER_SEGMENT_SEC)
 _motion_buffer_lock = threading.Lock()
 # Chẩn đoán trạng thái camera (cho UI/log)
 cam_status: Dict[str, dict] = {}
@@ -2528,6 +2531,165 @@ def get_storage_dir_size(force: bool = False):
     _size_cache["v"] = total_size
     return total_size
 
+def prune_thumbnail_cache(max_mb: int = THUMB_CACHE_MAX_MB) -> int:
+    """Giữ cache thumbnail trên đĩa ở mức giới hạn, xoá ảnh cũ nhất trước."""
+    limit = max(0, int(max_mb)) * 2 ** 20
+    files = []
+    total = 0
+    for root, _, names in os.walk(THUMBS_DIR):
+        for name in names:
+            fp = os.path.join(root, name)
+            try:
+                size = os.path.getsize(fp)
+                files.append((os.path.getmtime(fp), size, fp))
+                total += size
+            except OSError:
+                pass
+    if total <= limit:
+        return 0
+    target = int(limit * 0.8)
+    removed = 0
+    for _, size, fp in sorted(files):
+        if total <= target:
+            break
+        try:
+            os.remove(fp)
+            total -= size
+            removed += 1
+        except OSError:
+            pass
+    return removed
+
+
+def release_recording_page_cache(min_age: float = 30, max_age: float = 7200) -> int:
+    """Trả page cache của các segment đã ghi xong để cgroup/RAM không phình theo thời gian.
+    Chỉ bỏ cache đọc; dữ liệu trên đĩa không đổi."""
+    if not hasattr(os, "posix_fadvise"):
+        return 0
+    now = time.time()
+    released = 0
+    for cam_id in list(CONFIG.get("cameras", {})):
+        cam_dir = os.path.join(RECORDINGS_DIR, cam_id)
+        if not os.path.isdir(cam_dir):
+            continue
+        try:
+            names = os.listdir(cam_dir)
+        except OSError:
+            continue
+        for fname in names:
+            if not fname.endswith(".mp4"):
+                continue
+            fp = os.path.join(cam_dir, fname)
+            try:
+                age = now - os.path.getmtime(fp)
+            except OSError:
+                continue
+            if age < min_age or age > max_age:
+                continue
+            try:
+                fd = os.open(fp, os.O_RDONLY)
+                try:
+                    os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
+                finally:
+                    os.close(fd)
+                released += 1
+            except OSError:
+                pass
+    return released
+
+
+def cleanup_tmpfs():
+    """Dọn rác tmpfs: HLS/buffer của camera đã xoá, file tạm và buffer sai chế độ."""
+    now = time.time()
+    shutil.rmtree(LEGACY_THUMBS_DIR, ignore_errors=True)
+    cams = CONFIG.get("cameras", {})
+
+    try:
+        for name in list(os.listdir(HLS_DIR)):
+            path = os.path.join(HLS_DIR, name)
+            if not os.path.isdir(path):
+                try:
+                    if name.endswith((".tmp", ".part")) and now - os.path.getmtime(path) > 120:
+                        os.remove(path)
+                except OSError:
+                    pass
+                continue
+            if name not in cams:
+                shutil.rmtree(path, ignore_errors=True)
+                continue
+            st = cam_status.get(name, {})
+            live = bool(st.get("running") or viewers_active(name))
+            try:
+                for fname in list(os.listdir(path)):
+                    fp = os.path.join(path, fname)
+                    try:
+                        age = now - os.path.getmtime(fp)
+                    except OSError:
+                        continue
+                    stale_tmp = fname.endswith((".tmp", ".part")) and age > 120
+                    if not live and age > 120:
+                        os.remove(fp)
+                    elif stale_tmp:
+                        os.remove(fp)
+            except OSError:
+                pass
+    except OSError:
+        pass
+
+    roots = {BUFFER_DIR, buffer_root()}
+    for root_dir in roots:
+        if not os.path.isdir(root_dir):
+            continue
+        try:
+            names = list(os.listdir(root_dir))
+        except OSError:
+            continue
+        for name in names:
+            path = os.path.join(root_dir, name)
+            if not os.path.isdir(path):
+                continue
+            if name not in cams:
+                shutil.rmtree(path, ignore_errors=True)
+                continue
+            if schedule_record_mode(cams[name]) == "motion":
+                continue
+            try:
+                for fname in list(os.listdir(path)):
+                    fp = os.path.join(path, fname)
+                    try:
+                        if now - os.path.getmtime(fp) > 30:
+                            os.remove(fp)
+                    except OSError:
+                        pass
+            except OSError:
+                pass
+
+    for folder in (SNAPSHOTS_DIR, RECORDINGS_DIR):
+        try:
+            for root, _, names in os.walk(folder):
+                for name in names:
+                    if ".part" not in name:
+                        continue
+                    fp = os.path.join(root, name)
+                    try:
+                        if now - os.path.getmtime(fp) > 3600:
+                            os.remove(fp)
+                    except OSError:
+                        pass
+        except OSError:
+            pass
+
+
+def ram_janitor():
+    while not _shutdown.is_set():
+        try:
+            cleanup_tmpfs()
+            release_recording_page_cache(min_age=30, max_age=600)
+        except Exception as e:
+            log_event("warn", f"ram_janitor: {e}")
+        _shutdown.wait(60)
+
+
 # Bộ dọn dẹp ổ cứng thông minh (Theo số ngày + Giới hạn GB + Giới hạn % ổ cứng)
 def cam_retention_days(cam_id: str) -> float:
     """Số ngày lưu riêng của camera (0/rỗng = dùng mức chung)."""
@@ -2663,6 +2825,7 @@ def run_cleanup_now():
     except Exception as e:
         log_event("warn", f"cleanup events: {e}")
 
+    deleted_count += prune_thumbnail_cache()
     _size_cache["t"] = 0.0
     return deleted_count
 
@@ -2964,6 +3127,7 @@ def _mem_breakdown() -> dict:
     out["children"] = procs[:12]
     out["hls_dir_mb"] = round(_dir_size_bytes(HLS_DIR) / 2**20, 1)
     out["buffer_dir_mb"] = round(_dir_size_bytes(buffer_root()) / 2**20, 1)
+    out["thumb_dir_mb"] = round(_dir_size_bytes(THUMBS_DIR) / 2**20, 1)
     return out
 
 @app.get("/api/disk_health")

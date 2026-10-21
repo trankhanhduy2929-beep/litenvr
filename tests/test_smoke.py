@@ -99,6 +99,49 @@ class ApiTests(_AppCase):
         self.assertEqual(r.status_code, 200)
         self.assertIn("segments", r.json())
 
+    def test_ram_hygiene_moves_thumbs_to_disk_and_cleans_orphans(self):
+        self.assertFalse(self.m.THUMBS_DIR.startswith("/dev/shm"))
+        self.assertTrue(self.m.THUMBS_DIR.startswith(self.m.STORAGE_DIR))
+        self.assertGreaterEqual(self.m.MOTION_BUFFER_KEEP_SEC, 25)
+
+        os.makedirs(self.m.LEGACY_THUMBS_DIR, exist_ok=True)
+        with open(os.path.join(self.m.LEGACY_THUMBS_DIR, "old.jpg"), "wb") as f:
+            f.write(b"x")
+        hls_orphan = os.path.join(self.m.HLS_DIR, "orphan-cam")
+        buf_orphan = os.path.join(self.m.BUFFER_DIR, "orphan-cam")
+        os.makedirs(hls_orphan, exist_ok=True)
+        os.makedirs(buf_orphan, exist_ok=True)
+        with open(os.path.join(hls_orphan, "live0.ts"), "wb") as f:
+            f.write(b"x")
+        with open(os.path.join(buf_orphan, "old.mp4"), "wb") as f:
+            f.write(b"x")
+
+        self.m.cleanup_tmpfs()
+        self.assertFalse(os.path.exists(self.m.LEGACY_THUMBS_DIR))
+        self.assertFalse(os.path.exists(hls_orphan))
+        self.assertFalse(os.path.exists(buf_orphan))
+
+    def test_release_recording_page_cache_keeps_files(self):
+        cam = "cache-release"
+        rec = os.path.join(self.m.RECORDINGS_DIR, cam)
+        os.makedirs(rec, exist_ok=True)
+        fp = os.path.join(rec, "2026-01-01_00-00-00.mp4")
+        with open(fp, "wb") as f:
+            f.write(b"x" * 1024)
+        old = time.time() - 60
+        os.utime(fp, (old, old))
+        self.m.release_recording_page_cache(min_age=30, max_age=600)
+        self.assertTrue(os.path.isfile(fp))
+
+    def test_prune_thumbnail_cache(self):
+        cam_dir = os.path.join(self.m.THUMBS_DIR, "cache-cam")
+        os.makedirs(cam_dir, exist_ok=True)
+        for i in range(3):
+            with open(os.path.join(cam_dir, f"{i}.jpg"), "wb") as f:
+                f.write(b"x" * 1024)
+        self.assertEqual(self.m.prune_thumbnail_cache(0), 3)
+        self.assertEqual(os.listdir(cam_dir), [])
+
     def test_motion_preroll_promotes_completed_buffer(self):
         cam = "preroll-test"
         bdir = os.path.join(self.m.buffer_root(), cam)
