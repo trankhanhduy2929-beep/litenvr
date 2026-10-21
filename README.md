@@ -57,6 +57,7 @@ Nguyên nhân phổ biến: camera dùng **H.265/HEVC** — trình duyệt (Chro
   - **Luôn chuyển sang H.264**: tương thích mọi trình duyệt, tốn CPU hơn.
 - Phát bản ghi cũ quay bằng H.265: LiteNVR tự chuyển mã khi trình duyệt báo lỗi (không cần quay lại).
 - Nút **🔍 Chẩn đoán** hiển thị trạng thái ffmpeg, codec dò được và log lỗi gần nhất.
+- **Âm thanh Live**: bấm nút **🔇 Tiếng / 🔊 Tiếng** cạnh **Trực tiếp** để bật/tắt. LiteNVR tự chuyển âm thanh G.711/AAC của camera (EZVIZ, Hikvision…) sang AAC để trình duyệt phát được; nếu camera kén tiếng hoặc không có audio, chọn **Tắt âm thanh** trong phần nâng cao của camera.
 
 **Lưu ý luồng HEVC/H.265 4K (Imou/Dahua/Hanet/EZVIZ):** live view phải chuyển mã realtime nên tốn CPU. Nếu box yếu, dùng **luồng phụ H.264** làm `sub_rtsp_url` cho live (Imou `subtype=1`; Hanet `/user:hanet;pwd:...` kèm stream phụ) và để luồng chính HEVC cho ghi hình.
 
@@ -127,16 +128,18 @@ Nguyên nhân phổ biến: camera dùng **H.265/HEVC** — trình duyệt (Chro
 - **📱 Tối ưu điện thoại / máy tính bảng**: giao diện tự gọn thanh công cụ thành nút **☰** trên màn hình nhỏ, modal mở toàn màn hình, nút/ô nhập đủ lớn cho cảm ứng (ô nhập ≥16px, chống iOS tự phóng to), timeline cao hơn để kéo tua dễ hơn.
 
 
-## Sao lưu ra SMB/NFS/FTP
-Bấm **💾 Sao lưu SMB/NFS/FTP** (admin) để tự động chép các đoạn ghi hoàn chỉnh ra ổ/máy chủ ngoài:
-- **Thư mục SMB/NFS**: trước hết **mount** chia sẻ vào container (thêm volume trong `docker-compose`, VD `- /mnt/backup:/mnt/backup` hoặc mount CIFS/NFS trên ZimaOS), rồi nhập đường dẫn đó (VD `/mnt/backup`). LiteNVR chép vào `<thư mục>/<mã camera>/<tên file>`.
+## Lưu bản ghi ra ổ ngoài (SMB/Samba/FTP)
+Bấm **💾 Lưu trữ ngoài (SMB/FTP)** (admin) để tự động chuyển các đoạn ghi hoàn chỉnh ra máy chủ riêng:
+- **SMB/Samba/CIFS**: nhập máy chủ, share, tài khoản/mật khẩu (và domain nếu có). Không cần mount share vào container. Ví dụ: host `192.168.1.20`, share `Camera`, thư mục con `LiteNVR`.
+- **Thư mục đã mount**: nếu đã mount CIFS/NFS vào container, chọn kiểu này và nhập đường dẫn (VD `/mnt/backup`).
 - **FTP/FTPS**: nhập máy chủ, cổng, tài khoản/mật khẩu, thư mục đích; bật **FTPS** nếu server yêu cầu TLS.
-- **Sau khi sao lưu**: `copy` giữ nguyên trên ổ cứng; `move` **xoá bản ghi khỏi ổ cứng** sau khi sao lưu xong (chỉ áp dụng cho đích là thư mục).
-- **Camera**: bỏ trống = tất cả. Bản ghi **đang ghi** (mới hơn 30 giây), bản ghi **đã sao lưu** và bản ghi **đang khoá** sẽ bị bỏ qua; file thành công được ghi nhận để không chép lại.
-- Nút **🔌 Kiểm tra đích** thử ghi file hoặc kết nối FTP. API: `GET/POST /api/backup`, `POST /api/backup/test`.
+- **Thư mục tự chia theo ngày**: `<đích>/YYYY-MM-DD/<mã camera>/<tên file>`.
+- **Sau khi chuyển**: `copy` giữ bản gốc trên NVR; `move` **xoá bản ghi khỏi ổ NVR** sau khi chuyển thành công, chỉ còn dữ liệu trên máy chủ ngoài. Nếu camera đang chờ tải lên Google Drive, LiteNVR tạm hoãn chuyển để không mất file.
+- **Camera**: bỏ trống = tất cả. Bản ghi **đang ghi** (mới hơn 30 giây), bản ghi **đã chuyển** và bản ghi **đang khoá** sẽ bị bỏ qua; file thành công được ghi nhận để không chuyển lại.
+- Nút **🔌 Kiểm tra đích** thử ghi file hoặc kết nối SMB/FTP. API: `GET/POST /api/backup`, `POST /api/backup/test`.
 
 ## Sao lưu 24/7 lên Google Drive (tự dọn khi đầy)
-Bấm **☁️ Google Drive** (chỉ tài khoản admin) để bật tính năng: mọi đoạn ghi hoàn chỉnh sẽ **tự động tải lên Drive 24/7** vào thư mục `LiteNVR/<tên camera>`. Khi Drive đầy, LiteNVR **tự xoá các file cũ nhất do chính nó tải lên** (xoá vĩnh viễn, không vào thùng rác, để giải phóng dung lượng ngay) rồi tiếp tục tải. File đang được ghi sẽ không bị đụng tới; file lỗi được **thử lại tự động** (5 lần, chờ tăng dần).
+Bấm **☁️ Google Drive** (chỉ tài khoản admin) để bật tính năng: mọi đoạn ghi hoàn chỉnh sẽ **tự động tải lên Drive 24/7** vào thư mục `LiteNVR/YYYY-MM-DD/<tên camera>` (tự tạo, chia theo ngày cho dễ tìm). Khi Drive đầy, LiteNVR **tự xoá các file cũ nhất do chính nó tải lên** (xoá vĩnh viễn, không vào thùng rác, để giải phóng dung lượng ngay) rồi tiếp tục tải. File đang được ghi sẽ không bị đụng tới; file lỗi được **thử lại tự động** (5 lần, chờ tăng dần).
 
 **Cách kết nối Google (làm 1 lần):**
 1. Vào [console.cloud.google.com](https://console.cloud.google.com) → tạo Project → **APIs & Services → Library** → bật **Google Drive API**.

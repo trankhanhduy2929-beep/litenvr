@@ -376,10 +376,12 @@ DEFAULT_CONFIG = {
     },
     "backup": {
         "enabled": False,
-        "kind": "folder",             # folder = SMB/NFS đã mount; ftp = máy chủ FTP
+        "kind": "folder",             # folder = thư mục đã mount; ftp; smb = SMB/Samba trực tiếp
         "folder_path": "",            # đường dẫn thư mục đích (mount SMB/NFS trong container)
         "ftp_host": "", "ftp_port": 21, "ftp_user": "", "ftp_pass": "", "ftp_dir": "/",
         "ftp_tls": False,             # True = FTPS (FTP qua TLS)
+        "smb_host": "", "smb_port": 445, "smb_share": "", "smb_user": "", "smb_pass": "",
+        "smb_domain": "", "smb_dir": "",
         "mode": "copy",               # copy = giữ ở HDD; move = xoá sau khi sao lưu
         "cameras": [],                # [] = tất cả camera
         "since_ts": 0                 # chỉ sao lưu bản ghi mới hơn mốc này
@@ -417,6 +419,11 @@ def _normalize_config(cfg: dict) -> dict:
         gd.setdefault(k, v)
     if not isinstance(gd.get("cameras"), list):
         gd["cameras"] = []
+    bk = cfg.setdefault("backup", {})
+    for k, v in DEFAULT_CONFIG["backup"].items():
+        bk.setdefault(k, v)
+    if not isinstance(bk.get("cameras"), list):
+        bk["cameras"] = []
     # Di trú: camera cũ lưu "copy" nay chuyển sang "auto" để tự dò H.265
     for cam in cfg.get("cameras", {}).values():
         if cam.get("video_codec") in (None, "", "copy"):
@@ -2009,9 +2016,14 @@ def build_ffmpeg_cmd(cam_id: str, cam_info: dict, video_codec: Optional[str] = N
             live_args += ["-force_key_frames", f"expr:gte(t,n_forced*{LIVE_HLS_TIME})"]
             if LIVE_MAX_HEIGHT > 0:
                 live_args = ["-vf", f"scale=-2:'min({LIVE_MAX_HEIGHT},ih)'"] + live_args
+        live_audio = []
+        if audio_mode != "none":
+            live_audio = ["-map", "0:a:0?", "-c:a", "aac", "-b:a", "64k", "-ac", "1"]
+        else:
+            live_audio = ["-an"]
         cmd.extend([
             "-map", live_input_idx,
-            *live_args, "-an",
+            *live_args, *live_audio,
             "-f", "hls",
             "-hls_time", str(LIVE_HLS_TIME),
             "-hls_init_time", str(LIVE_HLS_TIME),
@@ -4468,7 +4480,7 @@ def test_notify():
 # ---------------- Sao lưu ra SMB/NFS/FTP ----------------
 class BackupSettings(BaseModel):
     enabled: bool = False
-    kind: str = "folder"              # folder | ftp
+    kind: str = "folder"              # folder | ftp | smb
     folder_path: str = ""
     ftp_host: str = ""
     ftp_port: int = 21
@@ -4476,6 +4488,13 @@ class BackupSettings(BaseModel):
     ftp_pass: str = ""                # để trống khi lưu = giữ mật khẩu cũ
     ftp_dir: str = "/"
     ftp_tls: bool = False
+    smb_host: str = ""
+    smb_port: int = 445
+    smb_share: str = ""
+    smb_user: str = ""
+    smb_pass: str = ""                # để trống khi lưu = giữ mật khẩu cũ
+    smb_domain: str = ""
+    smb_dir: str = ""
     mode: str = "copy"                # copy | move
     cameras: List[str] = []
     since_ts: float = 0
@@ -4493,6 +4512,84 @@ def _backup_done() -> set:
         return set()
 
 
+def _recording_day(name: str, fallback_ts: float = 0) -> str:
+    m = re.match(r"^(\d{4}-\d{2}-\d{2})_", os.path.basename(name or ""))
+    if m:
+        return m.group(1)
+    try:
+        return datetime.fromtimestamp(fallback_ts or time.time()).strftime("%Y-%m-%d")
+    except Exception:
+        return time.strftime("%Y-%m-%d")
+
+
+def _backup_dest_parts(rel: str, fallback_ts: float = 0):
+    cam, fn = rel.split("/", 1)
+    return _recording_day(fn, fallback_ts), cam, fn
+
+
+def _drive_pending_paths() -> set:
+    try:
+        rows = db_conn().execute(
+            "SELECT path FROM drive_uploads WHERE status IN ('pending','uploading','error')").fetchall()
+        return {r[0] for r in rows}
+    except Exception:
+        return set()
+
+
+class SmbTarget:
+    def __init__(self, cfg: dict):
+        try:
+            import smbclient
+        except ImportError as e:
+            raise RuntimeError("Thiếu thư viện SMB (smbprotocol) trong image") from e
+        self._client = smbclient
+        self._host = (cfg.get("smb_host") or "").strip()
+        self._share = (cfg.get("smb_share") or "").strip().strip("\\/")
+        self._base = (cfg.get("smb_dir") or "").strip().strip("\\/").replace("/", "\\")
+        self._port = int(cfg.get("smb_port") or 445)
+        if not self._host or not self._share:
+            raise RuntimeError("Chưa nhập máy chủ hoặc share SMB")
+        user = (cfg.get("smb_user") or "").strip()
+        domain = (cfg.get("smb_domain") or "").strip()
+        if domain and user and "\\" not in user and "@" not in user:
+            user = f"{domain}\\{user}"
+        smbclient.register_session(
+            self._host, username=user or None, password=(cfg.get("smb_pass") or "") or None,
+            port=self._port)
+
+    def path(self, *parts) -> str:
+        segments = [self._base] if self._base else []
+        for part in parts:
+            clean = str(part or "").replace("/", "\\").strip("\\")
+            if clean:
+                segments.append(clean)
+        suffix = ("\\" + "\\".join(segments)) if segments else ""
+        return f"\\\\{self._host}\\{self._share}{suffix}"
+
+    def ensure_dir(self, path: str):
+        if path:
+            self._client.makedirs(path, exist_ok=True)
+
+    def upload(self, src: str, dest: str):
+        self.ensure_dir(dest.rsplit("\\", 1)[0])
+        with open(src, "rb") as srcf, self._client.open_file(dest, "wb") as dstf:
+            shutil.copyfileobj(srcf, dstf, 1024 * 1024)
+
+    def probe(self):
+        if self._base:
+            self.ensure_dir(self.path())
+        remote = self.path(".litenvr_write_test")
+        with self._client.open_file(remote, "wb") as f:
+            f.write(b"ok")
+        self._client.remove(remote)
+
+    def close(self):
+        try:
+            self._client.delete_session(self._host, port=self._port)
+        except Exception:
+            pass
+
+
 def backup_scan() -> List[str]:
     """Danh sách bản ghi (cam_id/fname) chưa sao lưu, đủ cũ và không bị khoá."""
     cfg = _backup_cfg()
@@ -4503,16 +4600,20 @@ def backup_scan() -> List[str]:
     cams = cfg.get("cameras") or list(CONFIG.get("cameras", {}).keys())
     since = float(cfg.get("since_ts", 0) or 0)
     now = time.time()
+    drive_pending = _drive_pending_paths() if drive_connected() else set()
     out: List[str] = []
     for cam in cams:
         d = os.path.join(RECORDINGS_DIR, cam)
         if not os.path.isdir(d):
             continue
+        uploading_drive = cam_uploads_drive(cam)
         for fn in sorted(os.listdir(d)):
             if not fn.endswith(".mp4"):
                 continue
             rel = f"{cam}/{fn}"
             if rel in done or rel in locks:
+                continue
+            if uploading_drive and rel in drive_pending:
                 continue
             try:
                 st = os.stat(os.path.join(d, fn))
@@ -4534,31 +4635,60 @@ def _ftp_connect(cfg: dict):
     return c
 
 
-def _backup_file(rel: str, ftp=None):
+def _ftp_makedirs(ftp, path: str):
+    cur = ""
+    for part in [p for p in path.strip("/").split("/") if p]:
+        cur += "/" + part
+        try:
+            ftp.mkd(cur)
+        except Exception:
+            pass
+
+
+def _backup_file(rel: str, ftp=None, smb=None):
     """Sao lưu một bản ghi (cam_id/fname) ra đích; ghi nhận vào backup_done."""
     cfg = _backup_cfg()
     src = os.path.join(RECORDINGS_DIR, rel)
-    cam, fn = rel.split("/", 1)
+    try:
+        mtime = os.path.getmtime(src)
+    except OSError:
+        mtime = time.time()
+    day, cam, fn = _backup_dest_parts(rel, mtime)
     kind = cfg.get("kind", "folder")
-    if kind == "folder":
-        root = (cfg.get("folder_path") or "").strip()
-        if not root or not os.path.isdir(root):
-            raise RuntimeError("thư mục đích không tồn tại")
-        dest_dir = os.path.join(root, cam)
-        os.makedirs(dest_dir, exist_ok=True)
-        shutil.copy2(src, os.path.join(dest_dir, fn))
-    elif kind == "ftp":
-        if ftp is None:
-            ftp = _ftp_connect(cfg)
-        base = (cfg.get("ftp_dir") or "/").rstrip("/")
-        try:
-            ftp.mkd(f"{base}/{cam}")
-        except Exception:
-            pass
-        with open(src, "rb") as f:
-            ftp.storbinary(f"STOR {base}/{cam}/{fn}", f)
-    else:
-        raise RuntimeError("kiểu sao lưu không hợp lệ")
+    own_ftp = False
+    own_smb = False
+    try:
+        if kind == "folder":
+            root = (cfg.get("folder_path") or "").strip()
+            if not root or not os.path.isdir(root):
+                raise RuntimeError("thư mục đích không tồn tại")
+            dest_dir = os.path.join(root, day, cam)
+            os.makedirs(dest_dir, exist_ok=True)
+            shutil.copy2(src, os.path.join(dest_dir, fn))
+        elif kind == "ftp":
+            if ftp is None:
+                ftp = _ftp_connect(cfg)
+                own_ftp = True
+            base = (cfg.get("ftp_dir") or "/").strip("/")
+            remote_dir = "/".join(p for p in (base, day, cam) if p)
+            _ftp_makedirs(ftp, "/" + remote_dir)
+            with open(src, "rb") as f:
+                ftp.storbinary(f"STOR /{remote_dir}/{fn}", f)
+        elif kind == "smb":
+            if smb is None:
+                smb = SmbTarget(cfg)
+                own_smb = True
+            smb.upload(src, smb.path(day, cam, fn))
+        else:
+            raise RuntimeError("kiểu sao lưu không hợp lệ")
+    finally:
+        if own_ftp and ftp:
+            try:
+                ftp.quit()
+            except Exception:
+                pass
+        if own_smb and smb:
+            smb.close()
     conn = db_conn()
     try:
         size = os.path.getsize(src)
@@ -4567,7 +4697,7 @@ def _backup_file(rel: str, ftp=None):
     conn.execute("INSERT OR REPLACE INTO backup_done (path, cam_id, size, ts) VALUES (?,?,?,?)",
                  (rel, cam, size, time.time()))
     conn.commit()
-    if cfg.get("mode") == "move" and kind == "folder":
+    if cfg.get("mode") == "move":
         try:
             os.remove(src)
         except OSError:
@@ -4578,20 +4708,27 @@ def backup_worker():
     while not _shutdown.is_set():
         try:
             cfg = _backup_cfg()
-            if cfg.get("enabled") and (cfg.get("folder_path") or cfg.get("ftp_host")):
+            if cfg.get("enabled") and (cfg.get("folder_path") or cfg.get("ftp_host") or cfg.get("smb_host")):
                 files = backup_scan()
                 ftp = None
+                smb = None
                 if cfg.get("kind") == "ftp" and files:
                     try:
                         ftp = _ftp_connect(cfg)
                     except Exception as e:
                         log_event("warn", f"Backup FTP kết nối lỗi: {mask_secrets(str(e))}")
                         files = []
+                elif cfg.get("kind") == "smb" and files:
+                    try:
+                        smb = SmbTarget(cfg)
+                    except Exception as e:
+                        log_event("warn", f"Backup SMB kết nối lỗi: {mask_secrets(str(e))}")
+                        files = []
                 for rel in files[:50]:
                     if _shutdown.is_set():
                         break
                     try:
-                        _backup_file(rel, ftp)
+                        _backup_file(rel, ftp, smb)
                     except Exception as e:
                         log_event("warn", f"Sao lưu lỗi {rel}: {mask_secrets(str(e))}")
                         break
@@ -4600,6 +4737,8 @@ def backup_worker():
                         ftp.quit()
                     except Exception:
                         pass
+                if smb:
+                    smb.close()
         except Exception as e:
             log_event("warn", f"backup_worker: {mask_secrets(str(e))}")
         _shutdown.wait(60)
@@ -4619,6 +4758,10 @@ def get_backup_settings():
         "ftp_host": b.get("ftp_host", ""), "ftp_port": int(b.get("ftp_port") or 21),
         "ftp_user": b.get("ftp_user", ""), "has_ftp_pass": bool((b.get("ftp_pass") or "").strip()),
         "ftp_dir": b.get("ftp_dir", "/"), "ftp_tls": bool(b.get("ftp_tls")),
+        "smb_host": b.get("smb_host", ""), "smb_port": int(b.get("smb_port") or 445),
+        "smb_share": b.get("smb_share", ""), "smb_user": b.get("smb_user", ""),
+        "has_smb_pass": bool((b.get("smb_pass") or "").strip()),
+        "smb_domain": b.get("smb_domain", ""), "smb_dir": b.get("smb_dir", ""),
         "mode": b.get("mode", "copy"),
         "cameras": b.get("cameras", []),
         "since_ts": float(b.get("since_ts", 0) or 0),
@@ -4631,7 +4774,7 @@ def get_backup_settings():
 def update_backup_settings(settings: BackupSettings):
     b = CONFIG.setdefault("backup", dict(DEFAULT_CONFIG["backup"]))
     b["enabled"] = settings.enabled
-    b["kind"] = settings.kind if settings.kind in ("folder", "ftp") else "folder"
+    b["kind"] = settings.kind if settings.kind in ("folder", "ftp", "smb") else "folder"
     b["folder_path"] = settings.folder_path.strip()
     b["ftp_host"] = settings.ftp_host.strip()
     b["ftp_port"] = int(settings.ftp_port or 21)
@@ -4640,11 +4783,19 @@ def update_backup_settings(settings: BackupSettings):
         b["ftp_pass"] = settings.ftp_pass.strip()
     b["ftp_dir"] = settings.ftp_dir.strip() or "/"
     b["ftp_tls"] = settings.ftp_tls
+    b["smb_host"] = settings.smb_host.strip()
+    b["smb_port"] = int(settings.smb_port or 445)
+    b["smb_share"] = settings.smb_share.strip()
+    b["smb_user"] = settings.smb_user.strip()
+    if settings.smb_pass.strip():
+        b["smb_pass"] = settings.smb_pass.strip()
+    b["smb_domain"] = settings.smb_domain.strip()
+    b["smb_dir"] = settings.smb_dir.strip()
     b["mode"] = settings.mode if settings.mode in ("copy", "move") else "copy"
     b["cameras"] = [str(x) for x in (settings.cameras or []) if str(x)]
     b["since_ts"] = float(settings.since_ts or 0)
     save_config(CONFIG)
-    log_event("info", "Đã lưu cấu hình sao lưu SMB/NFS/FTP")
+    log_event("info", "Đã lưu cấu hình lưu trữ ngoài SMB/NFS/FTP")
     return {"status": "ok"}
 
 
@@ -4678,6 +4829,19 @@ def test_backup_destination():
         except Exception:
             pass
         return {"status": "ok", "results": {"ftp": "ok"}}
+    if kind == "smb":
+        if not cfg.get("smb_host") or not cfg.get("smb_share"):
+            raise HTTPException(status_code=400, detail="Chưa nhập máy chủ hoặc share SMB")
+        smb = None
+        try:
+            smb = SmbTarget(cfg)
+            smb.probe()
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Không ghi được vào SMB: {mask_secrets(str(e))}")
+        finally:
+            if smb:
+                smb.close()
+        return {"status": "ok", "results": {"smb": "ok"}}
     raise HTTPException(status_code=400, detail="Kiểu sao lưu không hợp lệ")
 
 
@@ -4863,15 +5027,21 @@ def drive_ensure_folder(name: str, parent_id: str = "") -> str:
     return j.get("id") or ""
 
 
-def drive_cam_folder(cam_id: str) -> str:
-    """Đảm bảo có LiteNVR/<tên camera>/ trên Drive; lưu id vào config để tái sử dụng."""
+def drive_root_folder() -> str:
     g = gd_cfg()
-    cams = CONFIG.get("cameras", {})
     root_id = (g.get("root_folder_id") or "").strip()
     if not root_id:
         root_id = drive_ensure_folder((g.get("folder_name") or "LiteNVR").strip() or "LiteNVR")
         g["root_folder_id"] = root_id
         save_config(CONFIG)
+    return root_id
+
+
+def drive_cam_folder(cam_id: str) -> str:
+    """Đảm bảo có LiteNVR/<tên camera>/ trên Drive; lưu id vào config để tái sử dụng."""
+    g = gd_cfg()
+    cams = CONFIG.get("cameras", {})
+    root_id = drive_root_folder()
     if not cam_id:
         return root_id
     cam_name = (cams.get(cam_id) or {}).get("name") or cam_id
@@ -4882,6 +5052,15 @@ def drive_cam_folder(cam_id: str) -> str:
         cmap[cam_id] = fid
         save_config(CONFIG)
     return fid
+
+
+def drive_upload_folder(cam_id: str, day: str) -> str:
+    root_id = drive_root_folder()
+    day_id = drive_ensure_folder(day, root_id)
+    if not cam_id:
+        return day_id
+    cam_name = (CONFIG.get("cameras", {}).get(cam_id) or {}).get("name") or cam_id
+    return drive_ensure_folder(cam_name, day_id)
 
 
 def drive_upload_file(local_path: str, name: str, parent_id: str, kbps: int = 0) -> dict:
@@ -5279,7 +5458,8 @@ def drive_process_row(row) -> str:
         conn.commit()
         return "skipped"
     try:
-        folder_id = drive_cam_folder(row["cam_id"])
+        day = _recording_day(row["name"], float(row["ts"] or 0))
+        folder_id = drive_upload_folder(row["cam_id"], day)
         size = os.path.getsize(local_path)
         res = drive_upload_file(local_path, row["name"], folder_id, int(g.get("bandwidth_kbps") or 0))
         conn.execute(
@@ -5581,7 +5761,7 @@ def drive_apply_tokens(cid: str, sec: str, refresh_token: str):
     drive_state["paused"] = False
     drive_state["reason"] = ""
     try:
-        drive_cam_folder(next(iter(CONFIG.get("cameras", {})), ""))  # tạo thư mục gốc ngay
+        drive_root_folder()  # tạo thư mục gốc ngay
     except DriveAuthError as e:
         drive_state["auth_error"] = str(e)
         raise HTTPException(status_code=400, detail=str(e))
@@ -5615,7 +5795,7 @@ def drive_test():
     try:
         drive_access_token(force=True)
         quota = drive_quota(use_cache=False)
-        drive_cam_folder(next(iter(CONFIG.get("cameras", {})), ""))
+        drive_root_folder()
     except DriveAuthError as e:
         raise HTTPException(status_code=401, detail=str(e))
     except Exception as e:

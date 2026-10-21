@@ -2040,6 +2040,7 @@
       </div>
       <button id="btnLive" class="active" onclick="sceneSwap(() => { playLive(); })" data-perm="live">Trực tiếp</button>
       <button id="btnGrid" onclick="toggleGrid()" data-perm="live">⊞ Lưới</button>
+      <button id="btnAudio" onclick="toggleLiveAudio()" data-perm="live" aria-pressed="false" title="Bật/tắt tiếng khi xem trực tiếp">🔇 Tiếng</button>
       <div class="spacer"></div>
       <span id="statusText" style="font-size:13px;">Đang khởi tạo...</span>
       <span id="userChip" class="user-chip" hidden></span>
@@ -2055,7 +2056,7 @@
             <div class="menu-group-label">Lưu trữ</div>
             <button onclick="openStorageModal()" data-admin>⚙️ Lưu trữ</button>
             <button onclick="openDriveModal()" data-admin>☁️ Google Drive <span id="driveBadge" class="log-badge" hidden>0</span></button>
-            <button onclick="openBackupModal()" data-admin>💾 Sao lưu SMB/NFS/FTP</button>
+            <button onclick="openBackupModal()" data-admin>💾 Lưu trữ ngoài (SMB/FTP)</button>
           </div>
           <div class="menu-sep" role="presentation"></div>
           <div class="menu-group" role="presentation">
@@ -2617,7 +2618,7 @@
         <label>Giới hạn dung lượng NVR dùng (GB — 0 = dùng tới khi Drive gần đầy) <input type="number" id="drvMaxGb" min="0" step="50"></label>
         <label>Dọn file cũ nhất khi Drive còn trống dưới (MB) <input type="number" id="drvMinFree" min="200" step="500"></label>
       </div>
-      <div style="font-size:12px;color:var(--text-muted);margin-top:6px;">Khi đạt giới hạn hoặc Drive sắp đầy: LiteNVR xoá <b>vĩnh viễn</b> file cũ nhất đã tải lên (không vào thùng rác) để dọn chỗ. Bản ghi trên ổ cứng không bị ảnh hưởng.</div>
+      <div style="font-size:12px;color:var(--text-muted);margin-top:6px;">Bản ghi trên Drive tự chia thư mục <b>LiteNVR/YYYY-MM-DD/Tên camera</b> để dễ tìm. Khi đạt giới hạn hoặc Drive sắp đầy: LiteNVR xoá <b>vĩnh viễn</b> file cũ nhất đã tải lên (không vào thùng rác) để dọn chỗ. Bản ghi trên ổ cứng không bị ảnh hưởng.</div>
       <div style="display:flex;justify-content:flex-end;margin-top:10px;">
         <button class="primary" onclick="saveDrive()">💾 Lưu cài đặt</button>
       </div>
@@ -2756,21 +2757,42 @@
     </div>
   </div>
 
-  <!-- Modal Sao lưu SMB/NFS/FTP -->
+  <!-- Modal lưu trữ ngoài SMB/FTP -->
   <div class="modal" id="backupModal">
-    <div class="modal-box">
-      <h3 style="margin-top:0">💾 Sao lưu bản ghi ra SMB/NFS/FTP</h3>
+    <div class="modal-box" style="max-width:720px;">
+      <h3 style="margin-top:0">💾 Lưu bản ghi ra ổ ngoài (SMB/FTP)</h3>
+      <div style="font-size:12px;color:var(--text-muted);line-height:1.55;margin-bottom:10px;">
+        Bản ghi được ghi tạm trên máy chủ NVR rồi tự chuyển ra đích bên ngoài. Chọn
+        <b>Xoá bản gốc sau khi chuyển</b> để không cần lưu trên ổ của Home Assistant.
+        Thư mục đích tự chia theo ngày: <b>YYYY-MM-DD/tên_camera/tên_file</b>.
+      </div>
       <label class="log-chk" style="font-size:13px; margin-bottom:12px;">
-        <input type="checkbox" id="bkEnabled"> Bật sao lưu tự động bản ghi ra đích bên ngoài
+        <input type="checkbox" id="bkEnabled"> Bật lưu trữ ngoài tự động
       </label>
       <div class="form-row">
         <label>Kiểu đích:</label>
         <select id="bkKind" onchange="bkToggleKind()">
-          <option value="folder">Thư mục SMB/NFS đã mount trong container</option>
+          <option value="smb">SMB / Samba / CIFS (nhập tài khoản trực tiếp)</option>
           <option value="ftp">Máy chủ FTP / FTPS</option>
+          <option value="folder">Thư mục đã mount trong container (SMB/NFS)</option>
         </select>
       </div>
-      <div id="bkFolderBox">
+      <div id="bkSmbBox">
+        <div class="grid-2">
+          <div class="form-row"><label>Máy chủ SMB:</label><input id="bkSmbHost" placeholder="192.168.1.20 hoặc nas.local"></div>
+          <div class="form-row"><label>Share / thư mục chia sẻ:</label><input id="bkSmbShare" placeholder="Camera"></div>
+        </div>
+        <div class="grid-2">
+          <div class="form-row"><label>Tài khoản:</label><input id="bkSmbUser" placeholder="user"></div>
+          <div class="form-row"><label>Mật khẩu (trống = giữ cũ):</label><input type="password" id="bkSmbPass" autocomplete="new-password"></div>
+        </div>
+        <div class="grid-2">
+          <div class="form-row"><label>Domain (nếu có):</label><input id="bkSmbDomain" placeholder="WORKGROUP"></div>
+          <div class="form-row"><label>Thư mục con trên share:</label><input id="bkSmbDir" placeholder="LiteNVR"></div>
+        </div>
+        <div class="form-row"><label>Cổng SMB:</label><input type="number" id="bkSmbPort" min="1" max="65535" value="445"></div>
+      </div>
+      <div id="bkFolderBox" style="display:none;">
         <div class="form-row">
           <label>Đường dẫn thư mục đích (mount SMB/NFS vào container, VD /mnt/backup):</label>
           <input id="bkFolderPath" placeholder="/mnt/backup">
@@ -2783,7 +2805,7 @@
         </div>
         <div class="grid-2">
           <div class="form-row"><label>Tài khoản:</label><input id="bkFtpUser"></div>
-          <div class="form-row"><label>Mật khẩu (trống = giữ cũ):</label><input type="password" id="bkFtpPass"></div>
+          <div class="form-row"><label>Mật khẩu (trống = giữ cũ):</label><input type="password" id="bkFtpPass" autocomplete="new-password"></div>
         </div>
         <div class="grid-2">
           <div class="form-row"><label>Thư mục trên FTP:</label><input id="bkFtpDir" value="/"></div>
@@ -2792,10 +2814,10 @@
       </div>
       <div class="grid-2">
         <div class="form-row">
-          <label>Sau khi sao lưu:</label>
+          <label>Sau khi chuyển xong:</label>
           <select id="bkMode">
-            <option value="copy">Giữ nguyên trên ổ cứng (copy)</option>
-            <option value="move">Xoá khỏi ổ cứng để giải phóng chỗ (move)</option>
+            <option value="copy">Giữ bản gốc trên ổ NVR (copy)</option>
+            <option value="move">Xoá bản gốc trên ổ NVR (chỉ lưu ổ ngoài)</option>
           </select>
         </div>
         <div class="form-row">
@@ -2929,6 +2951,21 @@
     let timelineZoom = 86400, timelineStart = 0, postMotionSec = 60, _tlViewKey = "";
     const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
     const video = document.getElementById("videoPlayer");
+    function updateAudioBtn() {
+      const b = document.getElementById("btnAudio");
+      if (!b) return;
+      const on = !video.muted && video.volume > 0;
+      b.textContent = on ? "🔊 Tiếng" : "🔇 Tiếng";
+      b.setAttribute("aria-pressed", on ? "true" : "false");
+      b.classList.toggle("active", on);
+    }
+    function toggleLiveAudio() {
+      video.muted = !video.muted;
+      if (!video.muted) { video.volume = 1; video.play().catch(() => {}); }
+      updateAudioBtn();
+    }
+    video.addEventListener("volumechange", updateAudioBtn);
+    updateAudioBtn();
     const dateInput = document.getElementById("dateInput");
     function ymd(d) {
       const p = n => String(n).padStart(2, "0");
@@ -5499,13 +5536,21 @@
     // ================= Sao lưu ra SMB/NFS/FTP =================
     function bkToggleKind() {
       const k = document.getElementById("bkKind").value;
+      document.getElementById("bkSmbBox").style.display = k === "smb" ? "block" : "none";
       document.getElementById("bkFolderBox").style.display = k === "folder" ? "block" : "none";
       document.getElementById("bkFtpBox").style.display = k === "ftp" ? "block" : "none";
     }
     async function openBackupModal() {
       const cfg = await fetch("api/backup").then(r => r.json());
       document.getElementById("bkEnabled").checked = !!cfg.enabled;
-      document.getElementById("bkKind").value = cfg.kind || "folder";
+      document.getElementById("bkKind").value = cfg.kind || "smb";
+      document.getElementById("bkSmbHost").value = cfg.smb_host || "";
+      document.getElementById("bkSmbPort").value = cfg.smb_port || 445;
+      document.getElementById("bkSmbShare").value = cfg.smb_share || "";
+      document.getElementById("bkSmbUser").value = cfg.smb_user || "";
+      document.getElementById("bkSmbPass").value = "";
+      document.getElementById("bkSmbDomain").value = cfg.smb_domain || "";
+      document.getElementById("bkSmbDir").value = cfg.smb_dir || "";
       document.getElementById("bkFolderPath").value = cfg.folder_path || "";
       document.getElementById("bkFtpHost").value = cfg.ftp_host || "";
       document.getElementById("bkFtpPort").value = cfg.ftp_port || 21;
@@ -5516,7 +5561,7 @@
       document.getElementById("bkMode").value = cfg.mode || "copy";
       document.getElementById("bkCameras").value = (cfg.cameras || []).join(", ");
       document.getElementById("bkStatus").textContent =
-        `Đã sao lưu ${cfg.done_count || 0} bản ghi (${drvFmtBytes(cfg.done_bytes || 0)}) · còn chờ ${cfg.pending || 0}`;
+        `Đã chuyển ${cfg.done_count || 0} bản ghi (${drvFmtBytes(cfg.done_bytes || 0)}) · còn chờ ${cfg.pending || 0}`;
       bkToggleKind();
       document.getElementById("backupModal").classList.add("open");
     }
@@ -5527,6 +5572,13 @@
       return {
         enabled: document.getElementById("bkEnabled").checked,
         kind: document.getElementById("bkKind").value,
+        smb_host: document.getElementById("bkSmbHost").value.trim(),
+        smb_port: parseInt(document.getElementById("bkSmbPort").value, 10) || 445,
+        smb_share: document.getElementById("bkSmbShare").value.trim(),
+        smb_user: document.getElementById("bkSmbUser").value.trim(),
+        smb_pass: document.getElementById("bkSmbPass").value,
+        smb_domain: document.getElementById("bkSmbDomain").value.trim(),
+        smb_dir: document.getElementById("bkSmbDir").value.trim(),
         folder_path: document.getElementById("bkFolderPath").value.trim(),
         ftp_host: document.getElementById("bkFtpHost").value.trim(),
         ftp_port: parseInt(document.getElementById("bkFtpPort").value, 10) || 21,

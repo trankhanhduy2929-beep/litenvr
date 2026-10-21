@@ -21,6 +21,7 @@ RUN pip install --no-cache-dir \
     uvicorn==0.54.0 \
     pydantic==2.14.1 \
     websocket-client==1.9.2 \
+    smbprotocol==1.17.0 \
     pyyaml==6.0.3
 
 COPY app/ /app/

@@ -286,13 +286,18 @@ class ApiTests(_AppCase):
         self.client.post("/api/notify", json={"disk_alert_enabled": False}, headers=auth())
 
     def test_backup_settings_persist(self):
-        r = self.client.post("/api/backup", json={"enabled": True, "kind": "folder",
-                                                  "folder_path": "/mnt/backup", "mode": "move",
+        r = self.client.post("/api/backup", json={"enabled": True, "kind": "smb",
+                                                  "smb_host": "nas.local", "smb_share": "Camera",
+                                                  "smb_user": "nvr", "smb_pass": "secret",
+                                                  "smb_dir": "LiteNVR", "mode": "move",
                                                   "cameras": ["cam1"]}, headers=auth())
         self.assertEqual(r.status_code, 200)
         j = self.client.get("/api/backup", headers=auth()).json()
         self.assertTrue(j["enabled"])
-        self.assertEqual(j["folder_path"], "/mnt/backup")
+        self.assertEqual(j["kind"], "smb")
+        self.assertEqual(j["smb_host"], "nas.local")
+        self.assertEqual(j["smb_share"], "Camera")
+        self.assertTrue(j["has_smb_pass"])
         self.assertEqual(j["mode"], "move")
         self.assertEqual(j["cameras"], ["cam1"])
         self.client.post("/api/backup", json={"enabled": False}, headers=auth())
@@ -821,6 +826,44 @@ class BuilderTests(unittest.TestCase):
         copy_cmd = self.m.build_ffmpeg_cmd("cam", self._cam(record_mode="copy", video_codec="copy"), include_live=True)
         self.assertNotIn("-force_key_frames", copy_cmd)
 
+    def test_live_hls_transcodes_audio_to_aac(self):
+        cmd = self.m.build_ffmpeg_cmd("cam", self._cam(record_mode="off", audio_mode="aac",
+                                                       video_codec="copy"), include_live=True)
+        self.assertIn("0:a:0?", cmd)
+        self.assertEqual(self._values(cmd, "-c:a")[-1], "aac")
+        silent = self.m.build_ffmpeg_cmd("cam", self._cam(record_mode="off", audio_mode="none",
+                                                          video_codec="copy"), include_live=True)
+        self.assertIn("-an", silent)
+        self.assertNotIn("0:a:0?", silent)
+
+    def test_backup_daily_path_and_smb_unc(self):
+        m = self.m
+        self.assertEqual(m._recording_day("2026-10-21_13-45-00.mp4"), "2026-10-21")
+        target = object.__new__(m.SmbTarget)
+        target._host = "nas.local"
+        target._share = "Camera"
+        target._base = "LiteNVR"
+        self.assertEqual(target.path("2026-10-21", "cam1", "a.mp4"),
+                         "\\\\nas.local\\Camera\\LiteNVR\\2026-10-21\\cam1\\a.mp4")
+
+    def test_drive_upload_folder_groups_by_day(self):
+        m = self.m
+        orig_cams = m.CONFIG.get("cameras")
+        orig_root = m.drive_root_folder
+        orig_ensure = m.drive_ensure_folder
+        calls = []
+        m.CONFIG["cameras"] = {"cam1": {"name": "Cổng"}}
+        m.drive_root_folder = lambda: "root-id"
+        m.drive_ensure_folder = lambda name, parent="": (calls.append((name, parent)) or f"{name}-id")
+        try:
+            fid = m.drive_upload_folder("cam1", "2026-10-21")
+        finally:
+            m.CONFIG["cameras"] = orig_cams
+            m.drive_root_folder = orig_root
+            m.drive_ensure_folder = orig_ensure
+        self.assertEqual(fid, "Cổng-id")
+        self.assertEqual(calls, [("2026-10-21", "root-id"), ("Cổng", "2026-10-21-id")])
+
     def test_hass_rules_merges_camera_entities(self):
         saved = self.m.CONFIG.get("cameras")
         self.m.CONFIG["cameras"] = {"c1": {"hass_entities": ["binary_sensor.a"]}}
@@ -869,10 +912,35 @@ class BuilderTests(unittest.TestCase):
         files = m.backup_scan()
         self.assertIn(f"camB/{fname}", files)
         m._backup_file(f"camB/{fname}")
-        self.assertTrue(os.path.isfile(os.path.join(dest, "camB", fname)))
+        self.assertTrue(os.path.isfile(os.path.join(dest, "2026-01-01", "camB", fname)))
         self.assertIn(f"camB/{fname}", m._backup_done())
         self.assertTrue(os.path.isfile(fpath))
         m.CONFIG["backup"]["enabled"] = False
+
+    def test_backup_move_removes_local_for_ftp(self):
+        m = self.m
+        rec = os.path.join(m.RECORDINGS_DIR, "camD")
+        os.makedirs(rec, exist_ok=True)
+        fname = "2026-02-03_04-05-06.mp4"
+        fpath = os.path.join(rec, fname)
+        with open(fpath, "wb") as f:
+            f.write(b"video")
+        m.CONFIG["backup"] = {"enabled": True, "kind": "ftp", "ftp_host": "example.invalid",
+                              "mode": "move", "cameras": ["camD"]}
+
+        class FakeFtp:
+            def mkd(self, path):
+                pass
+
+            def storbinary(self, cmd, f):
+                pass
+
+        try:
+            m._backup_file(f"camD/{fname}", FakeFtp())
+        finally:
+            m.CONFIG["backup"]["enabled"] = False
+        self.assertFalse(os.path.exists(fpath))
+        self.assertIn(f"camD/{fname}", m._backup_done())
 
     def test_backup_scan_skips_locked_and_recent(self):
         m = self.m
