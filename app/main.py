@@ -2985,8 +2985,11 @@ def api_latest_snapshots(request: Request):
               ON e.cam_id = m.cam_id AND e.timestamp = m.mt
         """)
         for cam_id, snap in c.fetchall():
-            if snap:
-                out[cam_id] = f"snapshots/{snap}"
+            path = os.path.join(SNAPSHOTS_DIR, snap) if snap else ""
+            if not _valid_snapshot(path):
+                path = _latest_snapshot(cam_id)
+            if path:
+                out[cam_id] = f"snapshots/{os.path.basename(path)}"
     except Exception:
         pass
     u = getattr(request.state, "user", None) or {}
@@ -3439,53 +3442,104 @@ def disk_alert_supervisor():
         _shutdown.wait(120)
 
 
-def _latest_snapshot(cam_id: str) -> str:
-    """Ảnh snapshot mới nhất hiện có của camera (dùng làm ảnh dự phòng cho sự kiện)."""
+def _valid_snapshot(path: str) -> bool:
+    """Chỉ coi snapshot là hợp lệ khi file đã ghi xong và có dữ liệu."""
     try:
-        names = [f for f in os.listdir(SNAPSHOTS_DIR)
-                 if f.startswith(cam_id + "_") and f.endswith(".jpg")]
-        if not names:
-            return ""
-        names.sort(key=lambda n: os.path.getmtime(os.path.join(SNAPSHOTS_DIR, n)), reverse=True)
-        return os.path.join(SNAPSHOTS_DIR, names[0])
+        return bool(path) and os.path.isfile(path) and os.path.getsize(path) > 0
+    except OSError:
+        return False
+
+def _latest_snapshot(cam_id: str) -> str:
+    """Ảnh snapshot hợp lệ mới nhất của camera (dùng làm ảnh dự phòng cho sự kiện)."""
+    try:
+        found = []
+        for name in os.listdir(SNAPSHOTS_DIR):
+            if not (name.startswith(cam_id + "_") and name.endswith(".jpg")):
+                continue
+            path = os.path.join(SNAPSHOTS_DIR, name)
+            if _valid_snapshot(path):
+                found.append((os.path.getmtime(path), path))
+        return max(found)[1] if found else ""
     except OSError:
         return ""
 
+def _fetch_snapshot(url: str, dest: str, timeout: float = 8,
+                    max_bytes: int = 8 * 1024 * 1024, label: str = "snapshot") -> bool:
+    """Tải ảnh về file tạm rồi đổi tên; không để lại file dở dang."""
+    tmp = f"{dest}.part"
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "LiteNVR"})
+        with urllib.request.urlopen(req, timeout=timeout) as r, open(tmp, "wb") as f:
+            data = r.read(max_bytes + 1)
+            if not data or len(data) > max_bytes:
+                return False
+            f.write(data)
+        if not _valid_snapshot(tmp):
+            return False
+        os.replace(tmp, dest)
+        return True
+    except Exception as e:
+        log_event("warn", f"Không tải được ảnh {label}: {mask_secrets(str(e))}")
+        return False
+    finally:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
 
-def _start_snapshot(cam_id: str, cam_info: dict, snap_path: str) -> str:
+def _go2rtc_snapshot(cam_id: str, dest: str) -> bool:
+    """Lấy frame tức thời từ go2rtc nội bộ (nhanh, không mở thêm phiên RTSP)."""
+    if not _go2rtc.get("running"):
+        return False
+    name = _g2_name(cam_id)
+    if name not in _go2rtc_streams():
+        return False
+    url = f"http://{GO2RTC_API}/api/frame.jpeg?src={urllib.parse.quote(name, safe='')}"
+    return _fetch_snapshot(url, dest, timeout=3, label="go2rtc")
+
+def _start_snapshot(cam_id: str, cam_info: dict, snap_path: str,
+                    event_id: Optional[int] = None) -> bool:
     with _snapshot_lock:
-        if _shutdown.is_set():
-            return ""
-        if cam_id in _snapshot_active:
-            return _snapshot_active[cam_id]
+        if _shutdown.is_set() or cam_id in _snapshot_active:
+            return False
         if not _snapshot_slots.acquire(blocking=False):
-            return ""
+            return False
         _snapshot_active[cam_id] = snap_path
     try:
-        threading.Thread(target=_capture_snapshot, args=(cam_id, dict(cam_info), snap_path), daemon=True).start()
+        threading.Thread(target=_capture_snapshot,
+                         args=(cam_id, dict(cam_info), snap_path, event_id), daemon=True).start()
     except Exception:
         with _snapshot_lock:
             _snapshot_active.pop(cam_id, None)
         _snapshot_slots.release()
-        return ""
-    return snap_path
+        return False
+    return True
 
 
-def _capture_snapshot(cam_id: str, cam_info: dict, snap_path: str):
+def _capture_snapshot(cam_id: str, cam_info: dict, snap_path: str,
+                      event_id: Optional[int] = None):
     proc = None
+    tmp_path = f"{snap_path}.part"
     try:
         _, snap_url = cam_source_urls(cam_id, cam_info)
         cmd = [*_ffmpeg_base_args(), "-y", *_input_args(snap_url, cam_info),
                "-i", snap_url, "-frames:v", "1", "-threads", str(FFMPEG_THREADS),
-               "-q:v", "3", snap_path]
+               "-q:v", "3", tmp_path]
         with _snapshot_lock:
             if _shutdown.is_set():
                 return
             proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             _snapshot_processes[cam_id] = proc
         proc.wait(timeout=12)
-        if proc.returncode:
+        if proc.returncode or not _valid_snapshot(tmp_path):
             log_event("warn", "Không chụp được snapshot", cam_id)
+            return
+        os.replace(tmp_path, snap_path)
+        if event_id is not None:
+            conn = db_conn()
+            conn.execute("UPDATE events SET snapshot=? WHERE id=?",
+                         (os.path.basename(snap_path), event_id))
+            conn.commit()
     except subprocess.TimeoutExpired:
         log_event("warn", "Chụp snapshot quá thời gian, đã dừng ffmpeg", cam_id)
     except Exception as e:
@@ -3495,6 +3549,10 @@ def _capture_snapshot(cam_id: str, cam_info: dict, snap_path: str):
             if proc:
                 _terminate_process(proc)
         finally:
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
             with _snapshot_lock:
                 _snapshot_processes.pop(cam_id, None)
                 _snapshot_active.pop(cam_id, None)
@@ -3529,17 +3587,7 @@ def _download_snapshot(url: str, dest: str, max_bytes: int = 8 * 1024 * 1024) ->
     """Tải ảnh snapshot từ URL (http/https) về dest. Trả True nếu thành công."""
     if not url.lower().startswith(("http://", "https://")):
         return False
-    try:
-        req = urllib.request.Request(url, headers={"User-Agent": "LiteNVR"})
-        with urllib.request.urlopen(req, timeout=8) as r, open(dest, "wb") as f:
-            data = r.read(max_bytes + 1)
-            if len(data) > max_bytes or not data:
-                return False
-            f.write(data)
-        return True
-    except Exception as e:
-        log_event("warn", f"Không tải được ảnh AI: {mask_secrets(str(e))}")
-        return False
+    return _fetch_snapshot(url, dest, max_bytes=max_bytes, label="AI")
 
 
 def handle_motion(cam_id: str, label: str, snap_url: str = ""):
@@ -3552,7 +3600,7 @@ def handle_motion(cam_id: str, label: str, snap_url: str = ""):
     ts = int(now.timestamp())
     date_str = now.strftime("%Y-%m-%d")
     time_str = now.strftime("%H:%M:%S")
-    snap_filename = f"{cam_id}_{ts}.jpg"
+    snap_filename = f"{cam_id}_{ts}_{uuid.uuid4().hex[:8]}.jpg"
     snap_path = os.path.join(SNAPSHOTS_DIR, snap_filename)
 
     # Kích hoạt cờ lưu video từ RAM xuống ổ cứng nếu camera đang ở chế độ Motion Only
@@ -3560,20 +3608,28 @@ def handle_motion(cam_id: str, label: str, snap_url: str = ""):
     motion_active_until[cam_id] = time.time() + post_sec
     log_event("info", f"Phát hiện chuyển động: {label}", cam_id)
 
-    if not (snap_url and _download_snapshot(snap_url, snap_path)):
-        snap_path = _start_snapshot(cam_id, cam_info, snap_path)
-    if not snap_path:
-        snap_path = _latest_snapshot(cam_id)   # hết chỗ chụp: dùng ảnh mới nhất để sự kiện vẫn có ảnh
-    snap_filename = os.path.basename(snap_path) if snap_path else None
+    snapshot_ready = False
+    if snap_url and _download_snapshot(snap_url, snap_path):
+        snapshot_ready = True
+    elif _go2rtc_snapshot(cam_id, snap_path):
+        snapshot_ready = True
+
+    # Sự kiện chỉ trỏ tới ảnh đã có sẵn; ảnh mới được chụp nền và cập nhật sau.
+    initial_path = snap_path if snapshot_ready else _latest_snapshot(cam_id)
+    initial_name = os.path.basename(initial_path) if _valid_snapshot(initial_path) else None
 
     conn = db_conn()
     c = conn.cursor()
     c.execute(
         "INSERT INTO events (cam_id, timestamp, date_str, time_str, label, snapshot) VALUES (?, ?, ?, ?, ?, ?)",
-        (cam_id, ts, date_str, time_str, label, snap_filename)
+        (cam_id, ts, date_str, time_str, label, initial_name)
     )
     conn.commit()
-    threading.Thread(target=notify_motion, args=(cam_id, label, snap_path), daemon=True).start()
+    event_id = c.lastrowid
+    if not snapshot_ready:
+        _start_snapshot(cam_id, cam_info, snap_path, event_id)
+    threading.Thread(target=notify_motion,
+                     args=(cam_id, label, initial_path if initial_name else ""), daemon=True).start()
     return {
         "status": "ok",
         "timestamp": ts,
@@ -4068,13 +4124,14 @@ def search_events(request: Request, cam_id: str = "", q: str = "",
             sec_of_day = hh * 3600 + mm * 60 + ss
         except Exception:
             sec_of_day = 0
+        snap = r[6] if r[6] and _valid_snapshot(os.path.join(SNAPSHOTS_DIR, r[6])) else ""
         out.append({
             "id": r[0], "cam_id": cid,
             "cam_name": (cams.get(cid) or {}).get("name", cid),
             "timestamp": r[2], "date": r[3], "time": t, "label": r[5],
             "sec_of_day": sec_of_day,
             "starred": bool(r[7]),
-            "snapshot": f"snapshots/{r[6]}" if r[6] else "",
+            "snapshot": f"snapshots/{snap}" if snap else "",
         })
     return {"events": out, "count": len(out), "total": total, "offset": offset, "limit": limit}
 

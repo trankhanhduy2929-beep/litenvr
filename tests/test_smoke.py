@@ -226,6 +226,10 @@ class ApiTests(_AppCase):
         self.client.post("/api/backup", json={"enabled": False}, headers=auth())
 
     def test_events_search(self):
+        os.makedirs(self.m.SNAPSHOTS_DIR, exist_ok=True)
+        for name in ("s.jpg", "t.jpg"):
+            with open(os.path.join(self.m.SNAPSHOTS_DIR, name), "wb") as f:
+                f.write(b"x")
         conn = self.m.db_conn()
         conn.execute("INSERT INTO events (cam_id, timestamp, date_str, time_str, label, snapshot) "
                      "VALUES (?,?,?,?,?,?)", ("camS", 100, "2026-01-02", "10-00-00", "Người lạ", "s.jpg"))
@@ -245,6 +249,16 @@ class ApiTests(_AppCase):
         self.assertEqual(j["events"][0]["cam_id"], "camT")
         self.assertEqual(j["total"], 1)
         self.assertEqual(j["offset"], 0)
+
+    def test_events_hide_missing_snapshot(self):
+        conn = self.m.db_conn()
+        conn.execute("INSERT INTO events (cam_id, timestamp, date_str, time_str, label, snapshot) "
+                     "VALUES (?,?,?,?,?,?)",
+                     ("camV", 300, "2026-03-04", "12-00-00", "test", "missing.jpg"))
+        conn.commit()
+        j = self.client.get("/api/events?cam_id=camV", headers=auth()).json()
+        self.assertEqual(j["count"], 1)
+        self.assertEqual(j["events"][0]["snapshot"], "")
 
     def test_events_star_and_label_filter(self):
         conn = self.m.db_conn()
@@ -370,6 +384,68 @@ class ApiTests(_AppCase):
             f.write("x")
         self.assertEqual(self.m._latest_snapshot("camX"), p)
         self.assertEqual(self.m._latest_snapshot("nope"), "")
+
+    def test_snapshot_ignores_empty_and_partial_files(self):
+        d = self.m.SNAPSHOTS_DIR
+        os.makedirs(d, exist_ok=True)
+        good = os.path.join(d, "camZ_1.jpg")
+        empty = os.path.join(d, "camZ_2.jpg")
+        partial = os.path.join(d, "camZ_3.jpg.part")
+        for path, data in ((good, b"ok"), (empty, b""), (partial, b"ok")):
+            with open(path, "wb") as f:
+                f.write(data)
+        self.assertEqual(self.m._latest_snapshot("camZ"), good)
+        self.assertFalse(self.m._valid_snapshot(empty))
+
+    def test_snapshot_capture_updates_event_after_file_ready(self):
+        conn = self.m.db_conn()
+        cur = conn.execute("INSERT INTO events (cam_id, timestamp, date_str, time_str, label) "
+                           "VALUES (?,?,?,?,?)", ("camY", 1, "2026-01-01", "00-00-01", "test"))
+        conn.commit()
+        event_id = cur.lastrowid
+        target = os.path.join(self.m.SNAPSHOTS_DIR, "camY_capture.jpg")
+
+        class FakeProc:
+            returncode = 0
+            def __init__(self, cmd, **kwargs):
+                with open(cmd[-1], "wb") as f:
+                    f.write(b"jpg")
+            def wait(self, timeout=None):
+                return 0
+            def poll(self):
+                return 0
+            def terminate(self):
+                pass
+            def kill(self):
+                pass
+
+        real = subprocess.Popen
+        self.assertTrue(self.m._snapshot_slots.acquire(blocking=False))
+        subprocess.Popen = FakeProc
+        try:
+            self.m._capture_snapshot("camY", {"rtsp_url": "rtsp://x"}, target, event_id)
+        finally:
+            subprocess.Popen = real
+        self.assertTrue(self.m._valid_snapshot(target))
+        self.assertFalse(os.path.exists(target + ".part"))
+        row = conn.execute("SELECT snapshot FROM events WHERE id=?", (event_id,)).fetchone()
+        self.assertEqual(row[0], "camY_capture.jpg")
+
+    def test_motion_without_snapshot_does_not_store_missing_path(self):
+        self.m.CONFIG.setdefault("cameras", {})["camG"] = {
+            "name": "G", "rtsp_url": "rtsp://x", "record_mode": "motion"}
+        acquired = 0
+        while self.m._snapshot_slots.acquire(blocking=False):
+            acquired += 1
+        try:
+            self.m.handle_motion("camG", "test")
+        finally:
+            for _ in range(acquired):
+                self.m._snapshot_slots.release()
+            self.m.CONFIG["cameras"].pop("camG", None)
+        row = self.m.db_conn().execute(
+            "SELECT snapshot FROM events WHERE cam_id='camG' ORDER BY id DESC LIMIT 1").fetchone()
+        self.assertIsNone(row[0])
 
     def test_camera_retention_api(self):
         self.client.post("/api/cameras", json={"cam_id": "camRet", "name": "R", "rtsp_url": "rtsp://x",
@@ -805,9 +881,9 @@ class LifecycleTests(unittest.TestCase):
         real = subprocess.Popen
         subprocess.Popen = FakeProc
         try:
-            paths = [m._start_snapshot(f"cam{i}", {"rtsp_url": "rtsp://x"}, os.path.join(self.sandbox, f"s{i}.jpg"))
-                     for i in range(5)]
-            self.assertGreaterEqual(paths.count(""), 2)
+            started = [m._start_snapshot(f"cam{i}", {"rtsp_url": "rtsp://x"}, os.path.join(self.sandbox, f"s{i}.jpg"))
+                       for i in range(5)]
+            self.assertGreaterEqual(started.count(False), 2)
             deadline = time.time() + 3
             while time.time() < deadline and (m._snapshot_active or m._snapshot_processes):
                 time.sleep(0.05)

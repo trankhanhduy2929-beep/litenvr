@@ -13,11 +13,6 @@ Mọi client cũ dùng **HTTP Basic Auth** (script, Home Assistant, ffmpeg/VLC, 
 
 Trang `/` và `/login` trả `Cache-Control: no-store` để trình duyệt không dùng bản cũ. Nếu đăng nhập đúng mật khẩu mà vẫn quay lại trang login: xoá cookie/phiên cũ cho trang này (hoặc Ctrl+F5); LiteNVR cũng tự xoá cookie phiên hỏng khi mở lại `/login` và **báo rõ** nếu trình duyệt chặn cookie (do iframe khác site) thay vì im lặng.
 
-## Hướng dẫn cài đặt trong ứng dụng
-Bấm nút **i** cạnh nút **⚙️ Cài đặt** để mở hướng dẫn ngay trong LiteNVR. Hộp thoại có hai tab:
-- **Home Assistant Add-on**: thêm kho add-on, cấu hình mật khẩu/cổng **3333**, lưu trữ, thêm camera, cập nhật và xử lý sự cố.
-- **Docker / Compose**: lệnh `docker run`, file Compose mẫu, biến môi trường, cổng **8080** (hoặc ánh xạ **9895**), HTTPS/reverse proxy, sao lưu và xử lý sự cố.
-
 ## Bảo mật & tài khoản con
 Bấm **🔐 Bảo mật** trên thanh công cụ:
 - **Tài khoản của tôi**: đổi mật khẩu, bật **2FA** (quét/nhập mã vào Google Authenticator, Authy… — sau khi bật, mỗi lần đăng nhập cần thêm mã 6 số).
