@@ -9,6 +9,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -83,6 +84,49 @@ class ApiTests(_AppCase):
         self.assertIn("cam1", self.client.get("/api/cameras", headers=auth()).json())
         self.assertEqual(self.client.delete("/api/cameras/cam1", headers=auth()).status_code, 200)
         self.assertEqual(self.client.get("/api/cameras", headers=auth()).json(), {})
+
+    def test_webrtc_offer_proxy_adds_host_candidate(self):
+        payload = {"cam_id": "cam-webrtc", "name": "Cam", "brand": "custom",
+                   "rtsp_url": "rtsp://127.0.0.1:1/x", "record_mode": "off"}
+        self.client.post("/api/cameras", json=payload, headers=auth())
+        sdp = ("v=0\r\n"
+               "o=- 0 0 IN IP4 127.0.0.1\r\n"
+               "s=-\r\n"
+               "t=0 0\r\n"
+               "m=video 9 UDP/TLS/RTP/SAVPF 96\r\n"
+               "a=mid:0\r\n"
+               "a=end-of-candidates\r\n")
+        captured = {}
+
+        class FakeResponse:
+            def __enter__(self):
+                return self
+            def __exit__(self, *args):
+                return False
+            def read(self):
+                return sdp.encode()
+
+        def fake_urlopen(req, timeout=0):
+            captured["url"] = req.full_url
+            captured["data"] = req.data
+            return FakeResponse()
+
+        old = self.m._go2rtc.get("running")
+        self.m._go2rtc["running"] = True
+        try:
+            with mock.patch.object(self.m.urllib.request, "urlopen", side_effect=fake_urlopen):
+                r = self.client.post(
+                    "/api/live/cam-webrtc/webrtc", content=sdp,
+                    headers={**auth(), "Content-Type": "application/sdp",
+                             "host": "192.168.5.63:9895"},
+                )
+        finally:
+            self.m._go2rtc["running"] = old
+            self.client.delete("/api/cameras/cam-webrtc", headers=auth())
+        self.assertEqual(r.status_code, 201, r.text)
+        self.assertIn("/api/webrtc?src=cam-webrtc", captured["url"])
+        self.assertIn("192.168.5.63 8556", r.text)
+        self.assertEqual(captured["data"], sdp.encode())
 
     def test_storage_motion_timeline(self):
         payload = {"cam_id": "cam1", "name": "Cam", "rtsp_url": "rtsp://127.0.0.1:1/x",
@@ -835,6 +879,23 @@ class BuilderTests(unittest.TestCase):
                                                           video_codec="copy"), include_live=True)
         self.assertIn("-an", silent)
         self.assertNotIn("0:a:0?", silent)
+
+    def test_webrtc_candidate_injection_and_config_port(self):
+        sdp = ("v=0\r\n"
+               "o=- 0 0 IN IP4 127.0.0.1\r\n"
+               "s=-\r\n"
+               "t=0 0\r\n"
+               "m=video 9 UDP/TLS/RTP/SAVPF 96\r\n"
+               "a=mid:0\r\n"
+               "a=end-of-candidates\r\n")
+        out = self.m.inject_webrtc_candidates(sdp, "192.168.5.63", 8556)
+        self.assertIn("a=candidate:9101 1 udp 2130706431 192.168.5.63 8556 typ host", out)
+        self.assertIn("a=candidate:9102 1 tcp 2130706430 192.168.5.63 8556 typ host", out)
+        self.assertLess(out.index("a=candidate:9101"), out.index("a=end-of-candidates"))
+        self.m.write_go2rtc_config()
+        with open(self.m.GO2RTC_CONFIG, encoding="utf-8") as f:
+            cfg = f.read()
+        self.assertIn(f'listen: ":{self.m.GO2RTC_WEBRTC_PORT}"', cfg)
 
     def test_backup_daily_path_and_smb_unc(self):
         m = self.m

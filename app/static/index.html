@@ -2945,6 +2945,7 @@
 
   <script>
     let cameras = {}, sysInfo = {}, currentCam = "", segments = [], hls = null, liveHeartbeatTimer = null, liveMode = true;
+    let livePc = null, livePcSeq = 0;
     let editingCamId = null;
     let _uiTimersStarted = false;
     let lastCursorSec = 0;
@@ -4329,24 +4330,100 @@
       return false;
     }
 
-    async function playLive() {
-      if (!currentCam) return;
-      const camId = currentCam;
-      const seq = ++liveWaitSeq;
-      document.getElementById("btnLive").classList.add("active");
-      currentSegStartSec = null;
-      liveMode = true;
-      stopDriveFetchPoll();
-      video.playbackRate = 1;
-      const spd = document.getElementById("pbSpeed");
-      if (spd) spd.value = "1";
-      const scrub = document.getElementById("scrubTime");
-      if (scrub) scrub.textContent = "● Đang xem trực tiếp";
-      const statusEl = document.getElementById("statusText");
-      statusEl.textContent = "Đang kết nối camera...";
-      updateDateBadge();
-      video.onloadedmetadata = null;
-      video.onerror = null;
+    function waitIceComplete(pc, ms) {
+      if (pc.iceGatheringState === "complete") return Promise.resolve();
+      return new Promise(resolve => {
+        let done = false;
+        const finish = () => {
+          if (done) return;
+          done = true;
+          clearTimeout(timer);
+          pc.removeEventListener("icegatheringstatechange", check);
+          resolve();
+        };
+        const check = () => { if (pc.iceGatheringState === "complete") finish(); };
+        const timer = setTimeout(finish, ms);
+        pc.addEventListener("icegatheringstatechange", check);
+      });
+    }
+
+    function stopLiveWebRTC() {
+      livePcSeq++;
+      if (livePc) { try { livePc.close(); } catch (e) {} livePc = null; }
+      if (video.srcObject) {
+        try { video.srcObject.getTracks().forEach(t => t.stop()); } catch (e) {}
+        video.srcObject = null;
+      }
+    }
+
+    async function startWebRTC(camId, seq) {
+      if (!window.RTCPeerConnection) return false;
+      stopLiveWebRTC();
+      const pcSeq = livePcSeq;
+      const pc = new RTCPeerConnection({
+        iceServers: [{urls: ["stun:stun.cloudflare.com:3478", "stun:stun.l.google.com:19302"]}]
+      });
+      livePc = pc;
+      const stream = new MediaStream();
+      const trackReady = new Promise(resolve => {
+        const timer = setTimeout(() => resolve(false), 4000);
+        pc.addEventListener("track", ev => {
+          if (ev.track && ev.track.kind === "video") { clearTimeout(timer); resolve(true); }
+        });
+      });
+      pc.ontrack = ev => {
+        const tracks = ev.streams && ev.streams[0] ? ev.streams[0].getTracks() : [ev.track];
+        tracks.forEach(t => { if (t && !stream.getTracks().includes(t)) stream.addTrack(t); });
+        video.srcObject = stream;
+        video.play().catch(() => {});
+      };
+      const connected = new Promise(resolve => {
+        const timer = setTimeout(() => resolve(false), 5000);
+        pc.onconnectionstatechange = () => {
+          if (pc.connectionState === "connected") { clearTimeout(timer); resolve(true); }
+          else if (pc.connectionState === "failed" || pc.connectionState === "closed") {
+            clearTimeout(timer); resolve(false);
+          }
+        };
+      });
+      try {
+        pc.addTransceiver("video", {direction: "recvonly"});
+        pc.addTransceiver("audio", {direction: "recvonly"});
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        await waitIceComplete(pc, 1000);
+        if (pcSeq !== livePcSeq || seq !== liveWaitSeq || camId !== currentCam || !liveMode) throw new Error("stale");
+        const res = await fetch(`api/live/${encodeURIComponent(camId)}/webrtc`, {
+          method: "POST",
+          headers: {"Content-Type": "application/sdp", "X-NVR-CSRF": "1"},
+          body: pc.localDescription.sdp
+        });
+        if (!res.ok) {
+          const e = new Error((await res.text()) || ("HTTP " + res.status));
+          e.status = res.status;
+          throw e;
+        }
+        const answer = await res.text();
+        if (!answer.startsWith("v=")) throw new Error("SDP không hợp lệ");
+        await pc.setRemoteDescription({type: "answer", sdp: answer});
+        const ok = await connected;
+        const hasVideo = await trackReady;
+        if (!ok || !hasVideo) throw new Error("WebRTC không nhận được hình");
+        if (pcSeq !== livePcSeq || seq !== liveWaitSeq || camId !== currentCam || !liveMode) throw new Error("stale");
+        return true;
+      } catch (e) {
+        try { pc.close(); } catch (_) {}
+        if (livePc === pc) livePc = null;
+        if (video.srcObject === stream) video.srcObject = null;
+        try { stream.getTracks().forEach(t => t.stop()); } catch (_) {}
+        if (e && e.message !== "stale" && e.status !== 503) {
+          __clientLog("warn", "WebRTC: " + (e.message || e), camId);
+        }
+        return false;
+      }
+    }
+
+    async function playLiveHls(camId, seq, statusEl) {
       const hlsUrl = `hls/${encodeURIComponent(camId)}/live.m3u8`;
       startLiveHeartbeat();
       video.onended = null;
@@ -4383,6 +4460,40 @@
       } else {
         statusEl.textContent = "Trình duyệt không hỗ trợ HLS. Hãy dùng Chrome/Edge/Safari mới.";
       }
+    }
+
+    async function playLive() {
+      if (!currentCam) return;
+      const camId = currentCam;
+      stopLiveHeartbeat();
+      stopLiveWebRTC();
+      const seq = ++liveWaitSeq;
+      document.getElementById("btnLive").classList.add("active");
+      currentSegStartSec = null;
+      liveMode = true;
+      stopDriveFetchPoll();
+      video.playbackRate = 1;
+      const spd = document.getElementById("pbSpeed");
+      if (spd) spd.value = "1";
+      const scrub = document.getElementById("scrubTime");
+      if (scrub) scrub.textContent = "● Đang xem trực tiếp";
+      const statusEl = document.getElementById("statusText");
+      statusEl.textContent = "Đang kết nối camera...";
+      updateDateBadge();
+      video.onloadedmetadata = null;
+      video.onerror = null;
+      if (hls) { hls.destroy(); hls = null; }
+      video.removeAttribute("src");
+      video.srcObject = null;
+      if (await startWebRTC(camId, seq)) {
+        if (seq !== liveWaitSeq || camId !== currentCam || !liveMode) return;
+        statusEl.textContent = "Đang xem trực tiếp (WebRTC - nhẹ CPU)";
+        updateAudioBtn();
+        return;
+      }
+      if (seq !== liveWaitSeq || camId !== currentCam || !liveMode) return;
+      statusEl.textContent = "Đang kết nối camera...";
+      await playLiveHls(camId, seq, statusEl);
     }
 
     async function loadTimeline() {
@@ -5007,6 +5118,7 @@
     });
 
     function playAtSecond(targetSec) {
+      stopLiveWebRTC();
       if (hls) { hls.destroy(); hls = null; }
       liveMode = false;
       document.getElementById("btnLive").classList.remove("active");
@@ -5291,6 +5403,7 @@
       btn.classList.toggle("active", on);
       btn.textContent = !on ? "⊞ Lưới" : (gridCount === 4 ? "⊞ Lưới 4 (bấm: 9 ô)" : "⊞ Lưới 9 (bấm: tắt)");
       if (gridHtTimer) { clearInterval(gridHtTimer); gridHtTimer = null; }
+      if (on) stopLiveWebRTC();
       try { video.pause(); } catch (e) {}
       if (!on) { if (currentCam) playLive(); return; }
       stopLiveHeartbeat();

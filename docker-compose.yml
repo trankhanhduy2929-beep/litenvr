@@ -8,6 +8,12 @@ services:
       - target: 8080
         published: "8080"
         protocol: tcp
+      - target: 8556
+        published: "8556"
+        protocol: tcp
+      - target: 8556
+        published: "8556"
+        protocol: udp
     environment:
       - TZ=Asia/Ho_Chi_Minh
       - NVR_USER=admin
@@ -17,6 +23,8 @@ services:
       - LIVE_IDLE_STOP_SEC=30
       - LIVE_MAX_HEIGHT=720
       - GO2RTC=auto
+      - WEBRTC_PORT=8556
+      # - WEBRTC_PUBLIC_HOST=192.168.1.10   # đặt IP LAN nếu truy cập qua tên miền/reverse proxy
     volumes:
       - type: bind
         source: /DATA/AppData/litenvr
@@ -45,6 +53,14 @@ services:
           description:
             en_us: Seconds without viewers before the live branch pauses (saves CPU)
             vi_vn: Số giây không có người xem thì tạm dừng luồng live (tiết kiệm CPU)
+        - container: WEBRTC_PORT
+          description:
+            en_us: WebRTC/ICE port (default 8556); forward this port for TCP and UDP
+            vi_vn: Cổng WebRTC/ICE (mặc định 8556); cần mở cả TCP và UDP
+        - container: WEBRTC_PUBLIC_HOST
+          description:
+            en_us: Optional LAN IP for ICE candidates when accessing via domain/reverse proxy
+            vi_vn: IP LAN tuỳ chọn cho ICE khi truy cập qua tên miền/reverse proxy
         - container: GO2RTC
           description:
             en_us: "auto (default), on or off - internal go2rtc restream shares one camera session"
@@ -57,6 +73,9 @@ services:
         - container: "8080"
           description:
             en_us: Web UI Port
+        - container: "8556"
+          description:
+            en_us: WebRTC (TCP + UDP)
       volumes:
         - container: /storage
           description:

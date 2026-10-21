@@ -10,6 +10,12 @@ services:
         published: "9895"
         protocol: tcp
         mode: ingress
+      - target: 8556
+        published: "8556"
+        protocol: tcp
+      - target: 8556
+        published: "8556"
+        protocol: udp
     environment:
       - TZ=Asia/Ho_Chi_Minh
       - NVR_USER=admin
@@ -18,9 +24,11 @@ services:
       # - NVR_IFRAME=on   # mở nếu muốn nhúng UI vào iframe (VD dashboard HA)
       - LIVE_IDLE_STOP_SEC=30
       - LIVE_MAX_HEIGHT=720
-      # Đã có go2rtc trong Frigate và trỏ luồng qua đó -> tắt go2rtc nội bộ cho nhẹ (1 tầng relay).
-      # Nếu KHÔNG dùng go2rtc bên ngoài thì đổi thành "auto" (hoặc "on").
-      - GO2RTC=off
+      # "on" bật go2rtc nội bộ cho WebRTC + dùng chung 1 phiên camera.
+      # Nếu đã có go2rtc trong Frigate và chỉ muốn ghi hình, đổi thành "off".
+      - GO2RTC=on
+      - WEBRTC_PORT=8556
+      # - WEBRTC_PUBLIC_HOST=192.168.1.10   # đặt IP LAN nếu truy cập qua tên miền/reverse proxy
     volumes:
       - type: bind
         source: /DATA/NVR
@@ -62,6 +70,14 @@ services:
           description:
             en_us: Max height of the transcoded live preview; lower = less CPU (0 keeps original). Recording always keeps original quality
             vi_vn: Chiều cao tối đa của live khi phải chuyển mã; nhỏ hơn = nhẹ CPU hơn (0 = giữ nguyên). Bản ghi luôn giữ nguyên gốc
+        - container: WEBRTC_PORT
+          description:
+            en_us: WebRTC/ICE port (default 8556); forward this port for TCP and UDP
+            vi_vn: Cổng WebRTC/ICE (mặc định 8556); cần mở cả TCP và UDP
+        - container: WEBRTC_PUBLIC_HOST
+          description:
+            en_us: Optional LAN IP for ICE candidates when accessing via domain/reverse proxy
+            vi_vn: IP LAN tuỳ chọn cho ICE khi truy cập qua tên miền/reverse proxy
         - container: GO2RTC
           description:
             en_us: "off when you already restream via Frigate/external go2rtc; auto (default), on otherwise"
@@ -70,6 +86,9 @@ services:
         - container: "8080"
           description:
             en_us: Web UI Port (host 9895)
+        - container: "8556"
+          description:
+            en_us: WebRTC (TCP + UDP)
       volumes:
         - container: /storage
           description:

@@ -1764,6 +1764,12 @@ GO2RTC_MODE = os.environ.get("GO2RTC", "auto").lower()   # auto | on | off
 GO2RTC_BIN = os.environ.get("GO2RTC_BIN", "go2rtc")
 GO2RTC_RTSP = "rtsp://127.0.0.1:8554"
 GO2RTC_API = "127.0.0.1:1984"
+try:
+    _webrtc_port = int(os.environ.get("WEBRTC_PORT", "8556") or "8556")
+except ValueError:
+    _webrtc_port = 8556
+GO2RTC_WEBRTC_PORT = max(1024, min(65535, _webrtc_port))
+GO2RTC_WEBRTC_HOST = os.environ.get("WEBRTC_PUBLIC_HOST", "").strip()
 GO2RTC_CONFIG = os.path.join(STORAGE_DIR, "go2rtc.yaml")
 _go2rtc = {"proc": None, "running": False, "error": "", "enabled": False}
 
@@ -1814,7 +1820,7 @@ def write_go2rtc_config():
         "rtsp:",
         f'  listen: "127.0.0.1:8554"',
         "webrtc:",
-        '  listen: "127.0.0.1:8555"',
+        f'  listen: ":{GO2RTC_WEBRTC_PORT}"',
         "streams:",
     ]
     for name, url in streams.items():
@@ -1933,6 +1939,62 @@ def cam_source_urls(cam_id: str, cam_info: dict):
                 main_url = f"{GO2RTC_RTSP}/{name}"
                 sub_url = f"{GO2RTC_RTSP}/{name}_sub" if f"{name}_sub" in streams else main_url
     return main_url, sub_url
+
+def webrtc_candidate_host(request: Request) -> str:
+    raw = GO2RTC_WEBRTC_HOST or request.headers.get("host", "")
+    raw = (raw.split(",")[0] or "").strip()
+    if not raw:
+        return ""
+    try:
+        host = urllib.parse.urlsplit("//" + raw).hostname or ""
+    except Exception:
+        return ""
+    if not host:
+        return ""
+    try:
+        ipaddress.ip_address(host)
+        return host
+    except ValueError:
+        pass
+    try:
+        infos = socket.getaddrinfo(host, None, socket.AF_INET, socket.SOCK_DGRAM)
+        return infos[0][4][0]
+    except Exception:
+        return ""
+
+
+def inject_webrtc_candidates(sdp: str, host: str, port: int) -> str:
+    if not host or not sdp:
+        return sdp
+    candidates = [
+        f"a=candidate:9101 1 udp 2130706431 {host} {port} typ host generation 0",
+        f"a=candidate:9102 1 tcp 2130706430 {host} {port} typ host tcptype passive generation 0",
+    ]
+    out: List[str] = []
+    section: List[str] = []
+
+    def flush():
+        if not section:
+            return
+        if section[0].startswith(("m=video", "m=audio")) and not any(
+                host in line and f" {port} typ " in line for line in section):
+            end = next((i for i, line in enumerate(section)
+                        if line.strip() == "a=end-of-candidates"), len(section))
+            if end == len(section):
+                while end > 0 and not section[end - 1].strip():
+                    end -= 1
+            section[end:end] = candidates
+        out.extend(section)
+
+    for line in sdp.replace("\r\n", "\n").split("\n"):
+        if line.startswith("m="):
+            flush()
+            section = [line]
+        else:
+            section.append(line)
+    flush()
+    return "\r\n".join(line for line in out if line) + "\r\n"
+
 
 def build_ffmpeg_cmd(cam_id: str, cam_info: dict, video_codec: Optional[str] = None, include_live: bool = True):
     main_url, sub_url = cam_source_urls(cam_id, cam_info)
@@ -2252,7 +2314,7 @@ def _camera_worker_loop(cam_id: str, token: threading.Event):
         resolved = resolve_video_codec(cam_id, cam_info)
         # Khi không ai xem: nếu luồng gốc đã browser-safe thì giữ HLS (rẻ),
         # còn nếu phải transcode thì bỏ nhánh HLS để tiết kiệm CPU.
-        include_live = viewers or not _needs_transcode(cam_id)
+        include_live = viewers
         if token.is_set() or _shutdown.is_set():
             break
         eff_info = dict(cam_info)
@@ -2427,7 +2489,7 @@ def live_supervisor():
                         log_event("info", f"Không có người xem {LIVE_IDLE_STOP_SEC}s, dừng live", cam_id)
                         stop_camera_worker(cam_id)
                 elif st.get("running") and st.get("_live_mode") is not None:
-                    desired = viewers_active(cam_id) or not _needs_transcode(cam_id)
+                    desired = viewers_active(cam_id)
                     if desired != st.get("_live_mode") and now - st.get("_mode_ts", 0) > 5:
                         st["_mode_ts"] = now
                         log_event("info", "Đổi nhánh live theo người xem (tiết kiệm CPU)", cam_id)
@@ -3503,6 +3565,43 @@ def test_camera_stream(req: CameraTestReq):
         "browser_safe": browser_safe,
         "format": (data.get("format") or {}).get("format_name", ""),
     }
+
+@app.post("/api/live/{cam_id}/webrtc")
+async def api_live_webrtc(cam_id: str, request: Request):
+    if cam_id not in CONFIG.get("cameras", {}):
+        raise HTTPException(status_code=404, detail="Camera không tồn tại")
+    assert_cam_access(request, cam_id)
+    if not _go2rtc.get("running") and GO2RTC_MODE != "off":
+        await asyncio.to_thread(start_go2rtc)
+    if not _go2rtc.get("running"):
+        raise HTTPException(status_code=503, detail="go2rtc chưa chạy; bật GO2RTC=on để xem WebRTC")
+    offer = await request.body()
+    if not offer or len(offer) > 2_000_000:
+        raise HTTPException(status_code=400, detail="SDP offer không hợp lệ")
+    name = _g2_name(cam_id)
+    url = f"http://127.0.0.1:1984/api/webrtc?src={urllib.parse.quote(name)}"
+
+    def exchange():
+        req = urllib.request.Request(
+            url, data=offer, method="POST",
+            headers={"Content-Type": "application/sdp", "User-Agent": "LiteNVR-WebRTC"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                return resp.read().decode("utf-8", "replace")
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", "replace").strip()
+            raise HTTPException(status_code=502, detail=detail[:300] or f"go2rtc HTTP {exc.code}")
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Không kết nối được go2rtc: {exc}")
+
+    answer = await asyncio.to_thread(exchange)
+    if not answer.startswith("v="):
+        raise HTTPException(status_code=502, detail="go2rtc trả về SDP không hợp lệ")
+    host = webrtc_candidate_host(request)
+    answer = inject_webrtc_candidates(answer, host, GO2RTC_WEBRTC_PORT)
+    return Response(content=answer, media_type="application/sdp",
+                    status_code=201, headers={"Cache-Control": "no-store"})
 
 @app.post("/api/live/{cam_id}")
 def api_live_heartbeat(cam_id: str):
