@@ -4819,16 +4819,16 @@
     async function waitLiveReady(camId, seq) {
       const statusEl = document.getElementById("statusText");
       for (let i = 0; i < 15; i++) {
-        if (seq !== liveWaitSeq || camId !== currentCam || !liveMode) return false;
+        if (seq !== liveWaitSeq || camId !== currentCam || !liveMode) return null;
         try {
           const st = await fetch(`api/status/${encodeURIComponent(camId)}`).then(r => r.json());
-          if (st.hls_ready) return true;
+          if (st.hls_ready) return st;
           statusEl.textContent = `Đang khởi động camera ${camId}... (${i + 1}s)`;
           if (i >= 5 && st.last_error) statusEl.textContent = "Live lỗi: " + st.last_error;
         } catch (e) {}
         await new Promise(r => setTimeout(r, 1000));
       }
-      return false;
+      return null;
     }
 
     function waitIceComplete(pc, ms) {
@@ -4928,8 +4928,14 @@
       const hlsUrl = `hls/${encodeURIComponent(camId)}/live.m3u8`;
       startLiveHeartbeat();
       video.onended = null;
-      await waitLiveReady(camId, seq);
-      if (seq !== liveWaitSeq || camId !== currentCam || !liveMode) return;
+      const info = await waitLiveReady(camId, seq);
+      if (!info || seq !== liveWaitSeq || camId !== currentCam || !liveMode) return;
+      const codec = String(info.detected_codec || "").toLowerCase();
+      const transcoding = codec === "hevc" || codec === "h265";
+      const liveLabel = transcoding ? "HLS - H.265 chuyển mã" : "HLS";
+      if (transcoding) {
+        __clientLog("warn", "Live đang dùng HLS và chuyển mã H.265; nên khai báo luồng phụ H.264 để giảm CPU", camId);
+      }
       if (typeof Hls !== "undefined" && Hls.isSupported()) {
         if (hls) { hls.destroy(); hls = null; }
         const inst = new Hls(liveHlsConfig());
@@ -4949,14 +4955,14 @@
           }
         });
         inst.on(Hls.Events.MANIFEST_PARSED, () => {
-          statusEl.textContent = "Đang xem trực tiếp (Live)";
+          statusEl.textContent = `Đang xem trực tiếp (${liveLabel})`;
           video.play().catch(() => {});
         });
         inst.loadSource(hlsUrl);
         inst.attachMedia(video);
       } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
         video.src = hlsUrl;
-        statusEl.textContent = "Đang xem trực tiếp (Live)";
+        statusEl.textContent = `Đang xem trực tiếp (${liveLabel})`;
         video.play().catch(() => {});
       } else {
         statusEl.textContent = "Trình duyệt không hỗ trợ HLS. Hãy dùng Chrome/Edge/Safari mới.";
@@ -4993,7 +4999,7 @@
         return;
       }
       if (seq !== liveWaitSeq || camId !== currentCam || !liveMode) return;
-      statusEl.textContent = "Đang kết nối camera...";
+      statusEl.textContent = "WebRTC không khả dụng, chuyển sang HLS...";
       await playLiveHls(camId, seq, statusEl);
     }
 

@@ -128,6 +128,40 @@ class ApiTests(_AppCase):
         self.assertIn("192.168.5.63 8556", r.text)
         self.assertEqual(captured["data"], sdp.encode())
 
+    def test_webrtc_prefers_substream(self):
+        payload = {"cam_id": "cam-webrtc-sub", "name": "Cam", "brand": "custom",
+                   "rtsp_url": "rtsp://127.0.0.1:1/main",
+                   "sub_rtsp_url": "rtsp://127.0.0.1:1/sub", "record_mode": "continuous"}
+        self.client.post("/api/cameras", json=payload, headers=auth())
+        sdp = "v=0\r\nm=video 9 UDP/TLS/RTP/SAVPF 96\r\na=end-of-candidates\r\n"
+        captured = {}
+
+        class FakeResponse:
+            def __enter__(self):
+                return self
+            def __exit__(self, *args):
+                return False
+            def read(self):
+                return sdp.encode()
+
+        def fake_urlopen(req, timeout=0):
+            captured["url"] = req.full_url
+            return FakeResponse()
+
+        old = self.m._go2rtc.get("running")
+        self.m._go2rtc["running"] = True
+        try:
+            with mock.patch.object(self.m.urllib.request, "urlopen", fake_urlopen):
+                r = self.client.post(
+                    "/api/live/cam-webrtc-sub/webrtc", content=sdp,
+                    headers={**auth(), "Content-Type": "application/sdp"})
+        finally:
+            self.m._go2rtc["running"] = old
+            self.client.delete("/api/cameras/cam-webrtc-sub", headers=auth())
+        self.assertEqual(r.status_code, 201, r.text)
+        self.assertIn("/api/webrtc?src=cam-webrtc-sub_sub", captured["url"])
+        self.assertEqual(r.headers["X-LiteNVR-WebRTC-Source"], "cam-webrtc-sub_sub")
+
     def test_storage_motion_timeline(self):
         payload = {"cam_id": "cam1", "name": "Cam", "rtsp_url": "rtsp://127.0.0.1:1/x",
                    "record_mode": "motion", "video_codec": "h264"}

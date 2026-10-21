@@ -1785,6 +1785,13 @@ def _g2_name(cam_id: str) -> str:
     """Tên stream an toàn cho go2rtc (không dấu cách/ký tự đặc biệt)."""
     return re.sub(r"[^A-Za-z0-9_.\-]", "_", cam_id)
 
+def _g2_live_name(cam_id: str, cam_info: dict) -> str:
+    """Stream go2rtc cho live/WebRTC: ưu tiên luồng phụ (nhẹ CPU/băng thông)."""
+    name = _g2_name(cam_id)
+    main = (cam_info.get("rtsp_url") or "").strip()
+    sub = (cam_info.get("sub_rtsp_url") or "").strip()
+    return f"{name}_sub" if sub and sub != main else name
+
 def _go2rtc_streams() -> Dict[str, str]:
     """Tên stream go2rtc -> URL gốc. Camera có luồng phụ tạo thêm <cam>_sub."""
     streams = {}
@@ -3584,7 +3591,7 @@ async def api_live_webrtc(cam_id: str, request: Request):
     offer = await request.body()
     if not offer or len(offer) > 2_000_000:
         raise HTTPException(status_code=400, detail="SDP offer không hợp lệ")
-    name = _g2_name(cam_id)
+    name = _g2_live_name(cam_id, CONFIG["cameras"][cam_id])
     url = f"http://127.0.0.1:1984/api/webrtc?src={urllib.parse.quote(name)}"
 
     def exchange():
@@ -3597,17 +3604,22 @@ async def api_live_webrtc(cam_id: str, request: Request):
                 return resp.read().decode("utf-8", "replace")
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", "replace").strip()
+            log_event("warn", f"WebRTC go2rtc lỗi ({name}): {mask_secrets(detail)[:200]}", cam_id)
             raise HTTPException(status_code=502, detail=detail[:300] or f"go2rtc HTTP {exc.code}")
         except Exception as exc:
+            log_event("warn", f"WebRTC không kết nối được go2rtc ({name}): {mask_secrets(str(exc))[:200]}", cam_id)
             raise HTTPException(status_code=502, detail=f"Không kết nối được go2rtc: {exc}")
 
     answer = await asyncio.to_thread(exchange)
     if not answer.startswith("v="):
+        log_event("warn", f"WebRTC nhận SDP không hợp lệ ({name})", cam_id)
         raise HTTPException(status_code=502, detail="go2rtc trả về SDP không hợp lệ")
     host = webrtc_candidate_host(request)
     answer = inject_webrtc_candidates(answer, host, GO2RTC_WEBRTC_PORT)
+    log_event("info", f"WebRTC kết nối nguồn {name}", cam_id)
     return Response(content=answer, media_type="application/sdp",
-                    status_code=201, headers={"Cache-Control": "no-store"})
+                    status_code=201,
+                    headers={"Cache-Control": "no-store", "X-LiteNVR-WebRTC-Source": name})
 
 @app.post("/api/live/{cam_id}")
 def api_live_heartbeat(cam_id: str):
