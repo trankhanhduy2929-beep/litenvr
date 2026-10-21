@@ -744,6 +744,7 @@
       max-width: var(--max-w);
       margin: 16px auto;
       padding: 0 16px;
+      view-transition-name: nvr-grid;
     }
 
     .grid-view.g9 {
@@ -801,6 +802,7 @@
       overflow: hidden;
       border: 1px solid rgba(255, 255, 255, 0.12);
       box-shadow: 0 20px 50px rgba(0, 0, 0, 0.65);
+      view-transition-name: nvr-player;
     }
 
     video {
@@ -818,6 +820,7 @@
       border: 1px solid var(--border-subtle);
       border-radius: var(--radius-lg);
       box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+      view-transition-name: nvr-timeline;
     }
 
     .tl-top {
@@ -1193,6 +1196,10 @@
       display: grid;
       grid-template-columns: repeat(auto-fill, minmax(225px, 1fr));
       gap: 14px;
+    }
+
+    #eventsList {
+      view-transition-name: nvr-events;
     }
 
     .event-card {
@@ -1861,6 +1868,30 @@
       .cam-method-tabs [role="tab"] { font-size: 12.5px; }
     }
 
+    @media (prefers-reduced-motion: no-preference) {
+      ::view-transition-old(root) {
+        animation: nvr-scene-fade-out 0.16s ease both;
+      }
+      ::view-transition-new(root) {
+        animation: nvr-scene-fade-in 0.26s var(--ease-out) both;
+      }
+      ::view-transition-group(nvr-player),
+      ::view-transition-group(nvr-grid),
+      ::view-transition-group(nvr-timeline),
+      ::view-transition-group(nvr-events) {
+        animation-duration: 0.28s;
+        animation-timing-function: var(--ease-out);
+      }
+    }
+
+    @keyframes nvr-scene-fade-out {
+      to { opacity: 0.86; }
+    }
+
+    @keyframes nvr-scene-fade-in {
+      from { opacity: 0; }
+    }
+
     @media (prefers-reduced-motion: reduce) {
       *, *::before, *::after {
         animation-duration: 0.01ms !important;
@@ -1915,7 +1946,7 @@
           <div class="cal-legend"><i></i> Ngày có bản ghi</div>
         </div>
       </div>
-      <button id="btnLive" class="active" onclick="playLive()" data-perm="live">Trực tiếp</button>
+      <button id="btnLive" class="active" onclick="sceneSwap(() => { playLive(); })" data-perm="live">Trực tiếp</button>
       <button id="btnGrid" onclick="toggleGrid()" data-perm="live">⊞ Lưới</button>
       <div class="spacer"></div>
       <span id="statusText" style="font-size:13px;">Đang khởi tạo...</span>
@@ -1926,7 +1957,6 @@
           <div class="menu-group" role="presentation">
             <div class="menu-group-label">Camera</div>
             <button onclick="openCamModal()" data-admin>📷 Quản lý Camera</button>
-            <button onclick="testMotion()" data-admin data-perm="live">⚡ Test Motion</button>
           </div>
           <div class="menu-sep" role="presentation"></div>
           <div class="menu-group" role="presentation">
@@ -2359,6 +2389,162 @@
     </div>
   </div>
 
+
+  <!-- Modal Cài đặt Lưu trữ & Dọn dẹp ổ cứng -->
+  <div class="modal" id="storageModal">
+    <div class="modal-box">
+      <h3 style="margin-top:0">Cài đặt Lưu trữ &amp; Tự động Xóa</h3>
+      <div class="form-row">
+        <label>Số ngày lưu tối đa (Quá số ngày này tự động xóa):</label>
+        <input type="number" id="inpRetDays" min="1" max="365" step="1">
+      </div>
+      <div class="form-row">
+        <label>Giới hạn dung lượng tối đa cho NVR (GB - Nhập 0 nếu không giới hạn):</label>
+        <input type="number" id="inpMaxGb" min="0" step="10">
+      </div>
+      <div class="form-row">
+        <label>Ngưỡng đầy ổ cứng tối đa (% - Vượt ngưỡng này sẽ tự xóa video cũ nhất):</label>
+        <input type="number" id="inpMaxPct" min="10" max="98" step="1">
+      </div>
+      <div class="form-row">
+        <label>Dung lượng trống tối thiểu (% - Dưới ngưỡng này sẽ tạm dừng ghi hình mới, tự ghi lại khi đủ chỗ):</label>
+        <input type="number" id="inpMinFree" min="0" max="50" step="1">
+      </div>
+      <div class="form-row">
+        <label>Thời gian ghi hình mỗi lần có chuyển động (Giây - Áp dụng chế độ Motion):</label>
+        <input type="number" id="inpPostMotion" min="15" max="600" step="5">
+      </div>
+      <label class="log-chk" style="font-size:13px; margin-bottom:10px;">
+        <input type="checkbox" id="inpRamBuffer"> Đệm chuyển động trong RAM (nhanh; bỏ chọn để ghi ra đĩa nếu RAM nhỏ)
+      </label>
+      <div style="font-size:12px;color:var(--text-muted);background:var(--glass-hi);border:1px solid var(--border-subtle);border-radius:var(--radius-sm);padding:10px 12px;margin-bottom:10px;">
+        🛰️ Chuyển động lấy từ cảm biến Home Assistant: mở <b>Quản lý Camera</b> → <b>Sửa</b> camera → thêm <b>Cảm biến chuyển động Home Assistant</b>.
+      </div>
+      <div style="display:flex; gap:8px; justify-content:space-between; margin-top:14px;">
+        <button class="warn" onclick="cleanNow()">🧹 Dọn ổ cứng ngay</button>
+        <div style="display:flex; gap:8px;">
+          <button onclick="closeStorageModal()">Đóng</button>
+          <button class="primary" onclick="saveStorage()">Lưu cấu hình</button>
+        </div>
+      </div>
+      <hr style="border:0; border-top:1px solid var(--border-subtle); margin:18px 0 12px;">
+      <h4 style="margin:0 0 8px;">💾 Sao lưu / Khôi phục toàn bộ cấu hình</h4>
+      <div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;">Bao gồm camera, lịch ghi hình, Home Assistant, thông báo Telegram/Webhook.</div>
+      <div style="display:flex; gap:8px; flex-wrap:wrap;">
+        <button onclick="window.location='api/config/export'">⬇️ Xuất cấu hình (.json)</button>
+        <button onclick="document.getElementById('restoreFile').click()">⬆️ Nhập cấu hình</button>
+        <input type="file" id="restoreFile" accept="application/json,.json" style="display:none;" onchange="importConfigFile(this)">
+      </div>
+      <div id="backupMsg" style="font-size:12px;color:var(--text-muted);margin-top:8px;"></div>
+    </div>
+  </div>
+
+  <!-- Modal Google Drive -->
+  <div class="modal" id="driveModal">
+    <div class="modal-box" style="max-width:720px;">
+      <h3 style="margin-top:0">☁️ Sao lưu Google Drive (24/7)</h3>
+      <div id="drvStatusLine" style="font-size:13.5px;color:var(--text-main);margin-bottom:6px;">Đang tải...</div>
+      <div id="drvQuotaLine" style="font-size:12.5px;color:var(--text-muted);margin-bottom:8px;"></div>
+      <div id="drvPaused" hidden style="font-size:13px;color:var(--warn-text);margin-bottom:10px;"></div>
+
+      <div id="drvConnectBox" style="background:var(--bg-elevated);border:1px solid var(--border-subtle);border-radius:var(--radius-sm);padding:12px;margin-bottom:12px;">
+        <div style="font-weight:600;margin-bottom:6px;">🔗 Kết nối tài khoản Google</div>
+        <div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;line-height:1.55;">
+          Vào <b>console.cloud.google.com</b> → tạo dự án → bật <b>Google Drive API</b> → tạo OAuth client loại
+          <b>"TVs and Limited Input devices"</b> (mục Credentials). Sau đó dán Client ID / Client Secret vào đây.
+          Google chỉ cho phép LiteNVR quyền <b>drive.file</b> (chỉ thấy các file do chính LiteNVR tạo ra) — đủ để
+          tạo thư mục riêng và sao lưu. Hướng dẫn từng bước có trong README («Sao lưu Google Drive»).
+        </div>
+        <div class="grid-2">
+          <label>Client ID <input id="drvClientId" placeholder="xxxx.apps.googleusercontent.com" autocomplete="off" spellcheck="false"></label>
+          <label>Client Secret <input id="drvClientSecret" type="password" placeholder="GOCSPX-..." autocomplete="off"></label>
+        </div>
+        <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;">
+          <button class="primary" onclick="driveConnectStart()">🔗 Kết nối bằng mã thiết bị</button>
+        </div>
+        <div id="drvCodeBox" hidden style="margin-top:12px;background:var(--bg-input);border:1px solid var(--border-focus);border-radius:10px;padding:14px;text-align:center;">
+          <div style="font-size:12px;color:var(--text-muted);">Mở trang Google bên dưới và nhập mã này:</div>
+          <div id="drvUserCode" style="font-size:28px;font-weight:800;letter-spacing:5px;margin:8px 0;color:var(--info-text);font-variant-numeric:tabular-nums;"></div>
+          <button style="width:auto;padding:8px 16px;" onclick="window.open('https://www.google.com/device','_blank','noopener')">Mở google.com/device ↗</button>
+          <div id="drvPollMsg" style="font-size:12px;color:var(--text-muted);margin-top:10px;">Đang chờ bạn cấp quyền... (tự kiểm tra mỗi 4 giây)</div>
+        </div>
+        <details style="margin-top:12px;">
+          <summary style="cursor:pointer;font-size:13px;color:var(--text-muted);">Hoặc dán Refresh Token có sẵn (rclone / OAuth Playground)</summary>
+          <textarea id="drvPasteToken" rows="3" placeholder='Dán refresh_token, hoặc cả JSON token của rclone: {"access_token":"...","refresh_token":"..."}' style="width:100%;box-sizing:border-box;margin-top:8px;background:var(--bg-input);color:var(--text-main);border:1px solid var(--border-subtle);border-radius:10px;padding:10px;font-family:inherit;"></textarea>
+          <div style="display:flex;gap:8px;margin-top:8px;">
+            <button onclick="drivePasteToken()">💾 Kết nối bằng token</button>
+          </div>
+        </details>
+      </div>
+
+      <div id="drvConnectedBox" hidden style="background:var(--bg-elevated);border:1px solid var(--border-subtle);border-radius:var(--radius-sm);padding:12px;margin-bottom:12px;">
+        <div id="drvConnInfo" style="font-size:12.5px;color:var(--text-muted);margin-bottom:10px;"></div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <button onclick="driveTest()">🔎 Kiểm tra kết nối</button>
+          <button class="warn" onclick="driveDisconnect()">⛔ Ngắt kết nối</button>
+        </div>
+      </div>
+
+      <div style="font-weight:600;margin:12px 0 8px;">⚙️ Cài đặt sao lưu</div>
+      <label class="log-chk" style="font-size:13px;margin-bottom:8px;">
+        <input type="checkbox" id="drvEnabled"> Bật sao lưu bản ghi lên Google Drive
+      </label>
+      <div style="font-size:12px;color:var(--text-muted);margin:6px 0 4px;">Camera sao lưu (không chọn = tất cả):</div>
+      <div id="drvCamList" class="perm-grid"></div>
+      <div class="grid-2" style="margin-top:10px;">
+        <label>Giới hạn tốc độ tải lên (Mbps — 0 = không giới hạn) <input type="number" id="drvBandwidth" min="0" step="1"></label>
+        <label>Giới hạn dung lượng NVR dùng (GB — 0 = dùng tới khi Drive gần đầy) <input type="number" id="drvMaxGb" min="0" step="50"></label>
+        <label>Dọn file cũ nhất khi Drive còn trống dưới (MB) <input type="number" id="drvMinFree" min="200" step="500"></label>
+      </div>
+      <div style="font-size:12px;color:var(--text-muted);margin-top:6px;">Khi đạt giới hạn hoặc Drive sắp đầy: LiteNVR xoá <b>vĩnh viễn</b> file cũ nhất đã tải lên (không vào thùng rác) để dọn chỗ. Bản ghi trên ổ cứng không bị ảnh hưởng.</div>
+      <div style="display:flex;justify-content:flex-end;margin-top:10px;">
+        <button class="primary" onclick="saveDrive()">💾 Lưu cài đặt</button>
+      </div>
+      <div id="drvMsg" style="font-size:12.5px;color:var(--text-muted);margin-top:8px;"></div>
+
+      <hr style="border:0;border-top:1px solid var(--border-subtle);margin:16px 0 12px;">
+
+      <div style="font-weight:600;margin-bottom:8px;">📊 Trạng thái &amp; hàng đợi</div>
+      <div id="drvStats" style="font-size:13px;color:var(--text-main);display:flex;gap:14px;flex-wrap:wrap;margin-bottom:10px;"></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px;">
+        <span style="font-size:13px;">Tải bù bản ghi cũ:</span>
+        <select id="drvNowCam" style="width:auto;max-width:200px;"></select>
+        <input type="date" id="drvNowFrom" style="width:auto;">
+        <span>→</span>
+        <input type="date" id="drvNowTo" style="width:auto;">
+        <button onclick="driveUploadNow()">🔼 Tải lên ngay</button>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;">
+        <button onclick="driveCleanupNow()">🧹 Dọn Drive ngay</button>
+        <button onclick="driveRetry()">🔁 Thử lại file lỗi</button>
+      </div>
+      <div id="drvRecent" style="max-height:220px;overflow-y:auto;border:1px solid var(--border-subtle);border-radius:var(--radius-sm);"></div>
+      <div style="display:flex;justify-content:flex-end;margin-top:14px;">
+        <button onclick="closeDriveModal()">Đóng</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal Nhật ký / Log lỗi -->
+  <div class="modal" id="logsModal">
+    <div class="modal-box" style="max-width:660px;">
+      <h3 style="margin-top:0">📋 Nhật ký &amp; Lỗi</h3>
+      <div id="logSys" class="log-filter"></div>
+      <div id="logCams" class="log-cams"></div>
+      <div class="log-filter">
+        <label class="log-chk"><input type="checkbox" id="logOnlyErr" onchange="renderLogs()"> Chỉ hiện lỗi/cảnh báo</label>
+        <button onclick="clearServerLogHint()" title="Nhật ký lưu trong RAM, tự xoá khi khởi động lại">ℹ️</button>
+      </div>
+      <div id="logList" class="log-list"></div>
+      <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:14px;">
+        <button onclick="copyLogs()">📄 Sao chép</button>
+        <button class="primary" onclick="closeLogsModal()">Đóng</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal Liên kết Home Assistant -->
+
   <div class="modal" id="hassModal">
     <div class="modal-box">
       <h3 style="margin-top:0">Liên kết Home Assistant</h3>
@@ -2638,17 +2824,21 @@
       d.setDate(d.getDate() + delta * (e && e.shiftKey ? 7 : 1));
       const v = ymd(d);
       if (v > todayStr()) return;
-      dateInput.value = v;
-      closeCalendar();
-      loadTimeline();
-      updateDateBadge();
+      sceneSwap(() => {
+        dateInput.value = v;
+        closeCalendar();
+        loadTimeline();
+        updateDateBadge();
+      });
     }
 
     function goToday() {
-      dateInput.value = todayStr();
-      closeCalendar();
-      loadTimeline();
-      updateDateBadge();
+      sceneSwap(() => {
+        dateInput.value = todayStr();
+        closeCalendar();
+        loadTimeline();
+        updateDateBadge();
+      });
     }
 
     function closeCalendar() {
@@ -2735,12 +2925,33 @@
       renderCalendar();
     }
 
+    let _sceneSwapActive = false;
+    function sceneSwap(update) {
+      const reduced = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      if (!document.startViewTransition || reduced || _sceneSwapActive) {
+        update();
+        return;
+      }
+      _sceneSwapActive = true;
+      let transition;
+      try {
+        transition = document.startViewTransition(() => update());
+      } catch (e) {
+        _sceneSwapActive = false;
+        update();
+        return;
+      }
+      transition.finished.then(() => { _sceneSwapActive = false; }, () => { _sceneSwapActive = false; });
+    }
+
     function pickCalDay(value) {
       if (!value || value > todayStr()) return;
-      dateInput.value = value;
-      closeCalendar();
-      loadTimeline();
-      updateDateBadge();
+      sceneSwap(() => {
+        dateInput.value = value;
+        closeCalendar();
+        loadTimeline();
+        updateDateBadge();
+      });
     }
 
     function updateDateBadge() {
@@ -2847,7 +3058,13 @@
         tile.innerHTML = `${snap}
           ${off ? '<span class="tile-offline">● Mất kết nối</span>' : ""}
           <div class="tile-info"><span>${info.name}</span><span class="badge ${info.record_mode === 'motion' ? 'motion' : (info.record_mode === 'off' ? 'off' : '')}">${modeTxt}</span></div>`;
-        const pick = () => { currentCam = id; document.getElementById("camSelect").value = id; renderCamStrip(stats); loadTimeline(); playLive(); };
+        const pick = () => sceneSwap(() => {
+          currentCam = id;
+          document.getElementById("camSelect").value = id;
+          renderCamStrip(stats);
+          loadTimeline();
+          playLive();
+        });
         tile.onclick = pick;
         tile.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pick(); } };
         strip.appendChild(tile);
@@ -2902,7 +3119,13 @@
         return;
       }
       currentCam = sel.value;
-      sel.onchange = () => { currentCam = sel.value; closeCalendar(); renderCamStrip(); loadTimeline(); playLive(); };
+      sel.onchange = () => sceneSwap(() => {
+        currentCam = sel.value;
+        closeCalendar();
+        renderCamStrip();
+        loadTimeline();
+        playLive();
+      });
       dateInput.onchange = () => { loadTimeline(); updateDateBadge(); };
       initScrubber();
       video.addEventListener("timeupdate", () => {
@@ -3735,16 +3958,6 @@
       } catch (e) {
         el.textContent = "❌ " + e;
       }
-    }
-
-    async function testMotion() {
-      if (!currentCam) return;
-      await fetch("api/motion", {
-        method: "POST",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({cam_id: currentCam, label: "Kích hoạt thử (Test)"})
-      });
-      setTimeout(() => { loadTimeline(); loadSystem(); }, 1500);
     }
 
     function __clientLog(level, message, camId) {
@@ -4735,8 +4948,10 @@
     // ================= Multi-view grid (1/4/9) =================
     let gridCount = 0, gridPlayers = [], gridHtTimer = null;
     function toggleGrid() {
-      gridCount = gridCount === 0 ? 4 : (gridCount === 4 ? 9 : 0);
-      renderGrid();
+      sceneSwap(() => {
+        gridCount = gridCount === 0 ? 4 : (gridCount === 4 ? 9 : 0);
+        renderGrid();
+      });
     }
     function renderGrid() {
       const gv = document.getElementById("gridView");
@@ -4762,14 +4977,14 @@
         tile.className = "grid-tile";
         tile.title = "Bấm để xem 1 camera (thoát lưới)";
         tile.innerHTML = `<video muted playsinline autoplay></video><div class="gname">${esc(cameras[id].name || id)}</div>`;
-        tile.onclick = () => {
+        tile.onclick = () => sceneSwap(() => {
           gridCount = 0;
           currentCam = id;
           document.getElementById("camSelect").value = id;
           renderCamStrip();
           loadTimeline();
           renderGrid();
-        };
+        });
         gv.appendChild(tile);
         const v = tile.querySelector("video");
         const url = `hls/${id}/live.m3u8`;
