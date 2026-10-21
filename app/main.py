@@ -991,6 +991,11 @@ def disk_low() -> bool:
         return False
 # Lưu thời điểm kết thúc ghi hình chuyển động của từng camera (Unix timestamp)
 motion_active_until: Dict[str, float] = {}
+# Ghi trước sự kiện chuyển động để clip không bị mất đầu (giây).
+MOTION_PREROLL_SEC = 10
+MOTION_BUFFER_SEGMENT_SEC = 15
+MOTION_BUFFER_KEEP_SEC = max(45, MOTION_PREROLL_SEC + MOTION_BUFFER_SEGMENT_SEC)
+_motion_buffer_lock = threading.Lock()
 # Chẩn đoán trạng thái camera (cho UI/log)
 cam_status: Dict[str, dict] = {}
 # Sức khoẻ luồng theo camera (fps, lần nhận khung gần nhất, đứng/không)
@@ -1977,7 +1982,7 @@ def build_ffmpeg_cmd(cam_id: str, cam_info: dict, video_codec: Optional[str] = N
         else:
             cmd.extend(["-c:v", "copy", "-an"])
 
-        seg_time = "60" if record_mode == "continuous" else "15"
+        seg_time = "60" if record_mode == "continuous" else str(MOTION_BUFFER_SEGMENT_SEC)
         target_dir = cam_rec_dir if record_mode == "continuous" else cam_buf_dir
 
         cmd.extend([
@@ -2426,6 +2431,65 @@ def live_supervisor():
             log_event("warn", f"live_supervisor: {e}")
         _shutdown.wait(5)
 
+def _buffer_segment_start(fpath: str) -> Optional[float]:
+    try:
+        name = os.path.basename(fpath)[:-4]
+        return datetime.strptime(name, "%Y-%m-%d_%H-%M-%S").timestamp()
+    except Exception:
+        return None
+
+def _buffer_completed_files(cam_id: str) -> List[str]:
+    cam_buf_dir = os.path.join(buffer_root(), cam_id)
+    if not os.path.isdir(cam_buf_dir):
+        return []
+    files = sorted(
+        [os.path.join(cam_buf_dir, f) for f in os.listdir(cam_buf_dir) if f.endswith(".mp4")],
+        key=os.path.getmtime,
+    )
+    # Bỏ qua file cuối cùng vì FFmpeg đang ghi dở.
+    return files[:-1] if len(files) > 1 else []
+
+def _move_buffer_file(cam_id: str, fpath: str) -> bool:
+    cam_rec_dir = os.path.join(RECORDINGS_DIR, cam_id)
+    os.makedirs(cam_rec_dir, exist_ok=True)
+    fname = os.path.basename(fpath)
+    dest = os.path.join(cam_rec_dir, fname)
+    if os.path.exists(dest):
+        stem, ext = os.path.splitext(fname)
+        dest = os.path.join(cam_rec_dir, f"{stem}_{uuid.uuid4().hex[:6]}{ext}")
+    try:
+        os.replace(fpath, dest)
+        return True
+    except OSError:
+        pass
+    tmp = dest + f".part-{uuid.uuid4().hex[:8]}"
+    try:
+        shutil.copy2(fpath, tmp)
+        os.replace(tmp, dest)
+        os.remove(fpath)
+        return True
+    except Exception as e:
+        try:
+            os.remove(tmp)
+        except Exception:
+            pass
+        log_event("warn", f"Không chuyển được đệm motion: {e}", cam_id)
+        return False
+
+def promote_motion_buffer(cam_id: str, since: Optional[float] = None) -> int:
+    """Chuyển đoạn đệm đã ghi xong xuống ổ cứng.
+    `since` giới hạn ở các đoạn giao với mốc cần giữ (dùng cho pre-roll sự kiện)."""
+    moved = 0
+    with _motion_buffer_lock:
+        for fpath in reversed(_buffer_completed_files(cam_id)):
+            start = _buffer_segment_start(fpath)
+            if since is not None and start is not None \
+                    and start + MOTION_BUFFER_SEGMENT_SEC <= since:
+                break
+            if _move_buffer_file(cam_id, fpath):
+                moved += 1
+    return moved
+
 # Luồng quản lý bộ đệm cho chế độ "Chỉ lưu khi có chuyển động (motion)"
 def motion_buffer_manager():
     while True:
@@ -2433,35 +2497,17 @@ def motion_buffer_manager():
         for cam_id, cam_info in list(CONFIG.get("cameras", {}).items()):
             if schedule_record_mode(cam_info) != "motion":
                 continue
-            cam_buf_dir = os.path.join(buffer_root(), cam_id)
-            cam_rec_dir = os.path.join(RECORDINGS_DIR, cam_id)
-            if not os.path.exists(cam_buf_dir):
-                continue
-
-            files = sorted(
-                [
-                    os.path.join(cam_buf_dir, f)
-                    for f in os.listdir(cam_buf_dir) if f.endswith(".mp4")
-                ],
-                key=os.path.getmtime,
-            )
-            # Bỏ qua file cuối cùng vì FFmpeg đang ghi dở
-            completed_files = files[:-1] if len(files) > 1 else []
             is_motion_active = now <= motion_active_until.get(cam_id, 0)
-
-            for fpath in completed_files:
-                fname = os.path.basename(fpath)
-                mtime = os.path.getmtime(fpath)
-                if is_motion_active:
-                    # Đang có chuyển động -> Di chuyển cả đoạn đệm trước đó xuống ổ cứng HDD
-                    shutil.move(fpath, os.path.join(cam_rec_dir, fname))
-                else:
-                    # Không có chuyển động -> Chỉ giữ lại 3 đoạn gần nhất (~45 giây pre-roll) trong RAM, xóa đoạn cũ
-                    if now - mtime > 45:
-                        try:
+            if is_motion_active:
+                promote_motion_buffer(cam_id)
+                continue
+            with _motion_buffer_lock:
+                for fpath in _buffer_completed_files(cam_id):
+                    try:
+                        if now - os.path.getmtime(fpath) > MOTION_BUFFER_KEEP_SEC:
                             os.remove(fpath)
-                        except Exception:
-                            pass
+                    except Exception:
+                        pass
         time.sleep(2)
 
 # Hàm tính tổng dung lượng thư mục lưu trữ (Bytes), có cache để tránh walk ổ cứng liên tục
@@ -3617,9 +3663,14 @@ def handle_motion(cam_id: str, label: str, snap_url: str = ""):
     snap_filename = f"{cam_id}_{ts}_{uuid.uuid4().hex[:8]}.jpg"
     snap_path = os.path.join(SNAPSHOTS_DIR, snap_filename)
 
-    # Kích hoạt cờ lưu video từ RAM xuống ổ cứng nếu camera đang ở chế độ Motion Only
+    # Kích hoạt cờ lưu video từ RAM xuống ổ cứng nếu camera đang ở chế độ Motion Only.
+    # Chuyển ngay các đoạn đệm giao với 10 giây trước sự kiện để clip không bị mất đầu.
     post_sec = int(CONFIG.get("post_motion_sec", 60))
     motion_active_until[cam_id] = time.time() + post_sec
+    try:
+        promote_motion_buffer(cam_id, ts - MOTION_PREROLL_SEC)
+    except Exception as e:
+        log_event("warn", f"Không giữ được pre-roll motion: {e}", cam_id)
     log_event("info", f"Phát hiện chuyển động: {label}", cam_id)
 
     snapshot_ready = False
@@ -3648,6 +3699,7 @@ def handle_motion(cam_id: str, label: str, snap_url: str = ""):
         "status": "ok",
         "timestamp": ts,
         "record_mode": cam_info.get("record_mode", "continuous"),
+        "pre_roll_sec": MOTION_PREROLL_SEC,
         "recording_until": motion_active_until[cam_id]
     }
 

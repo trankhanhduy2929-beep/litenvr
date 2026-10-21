@@ -92,11 +92,40 @@ class ApiTests(_AppCase):
                                                    "max_disk_percent": 90, "post_motion_sec": 30},
                              headers=auth())
         self.assertEqual(r.status_code, 200)
-        self.client.post("/api/motion", json={"cam_id": "cam1", "label": "test"}, headers=auth())
+        r = self.client.post("/api/motion", json={"cam_id": "cam1", "label": "test"}, headers=auth())
+        self.assertEqual(r.json()["pre_roll_sec"], 10)
         d = time.strftime("%Y-%m-%d")
         r = self.client.get(f"/api/timeline/cam1?date={d}", headers=auth())
         self.assertEqual(r.status_code, 200)
         self.assertIn("segments", r.json())
+
+    def test_motion_preroll_promotes_completed_buffer(self):
+        cam = "preroll-test"
+        bdir = os.path.join(self.m.buffer_root(), cam)
+        rdir = os.path.join(self.m.RECORDINGS_DIR, cam)
+        os.makedirs(bdir, exist_ok=True)
+        now = time.time()
+        paths = {}
+        for offset, key in ((-30, "old"), (-15, "recent"), (0, "active")):
+            t = datetime.fromtimestamp(now + offset)
+            name = t.strftime("%Y-%m-%d_%H-%M-%S") + ".mp4"
+            path = os.path.join(bdir, name)
+            with open(path, "wb") as f:
+                f.write(b"x")
+            os.utime(path, (now + offset, now + offset))
+            paths[key] = path
+
+        moved = self.m.promote_motion_buffer(cam, now - self.m.MOTION_PREROLL_SEC)
+        self.assertEqual(moved, 1)
+        self.assertTrue(os.path.isfile(os.path.join(rdir, os.path.basename(paths["recent"]))))
+        self.assertTrue(os.path.isfile(paths["active"]))
+        self.assertTrue(os.path.isfile(paths["old"]))
+
+        self.m.promote_motion_buffer(cam)
+        self.assertTrue(os.path.isfile(os.path.join(rdir, os.path.basename(paths["old"]))))
+        self.assertTrue(os.path.isfile(paths["active"]))
+        shutil.rmtree(bdir, ignore_errors=True)
+        shutil.rmtree(rdir, ignore_errors=True)
 
     def test_play_missing_and_status(self):
         payload = {"cam_id": "cam1", "name": "Cam", "rtsp_url": "rtsp://127.0.0.1:1/x",
