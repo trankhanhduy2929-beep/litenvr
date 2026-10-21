@@ -188,7 +188,7 @@ rest_command:
 3. Bấm **Submit** để cài đặt. Mở ứng dụng và thêm Camera trực tiếp trên giao diện Web!
 
 ### Mẫu riêng cho ZimaOS (kèm giới hạn CPU/RAM)
-Nếu chạy ZimaOS và muốn cấu hình "chuẩn" như bản đang chạy (cổng **9895**, ổ `/DATA/NVR`, giới hạn **1 CPU / 4GB RAM**, tmpfs cho HLS + buffer), dùng file **`docker-compose.zimaos.yml`**:
+Nếu chạy ZimaOS và muốn cấu hình "chuẩn" như bản đang chạy (cổng **9895**, WebRTC **8556 TCP/UDP**, ổ `/DATA/NVR`, giới hạn **1 CPU / 4GB RAM**, tmpfs cho HLS + buffer), dùng file **`docker-compose.zimaos.yml`**:
 - `GO2RTC=on`: bật go2rtc nội bộ để dùng chung một phiên camera cho ghi hình + WebRTC. Nếu bạn **đã có go2rtc trong Frigate** và muốn LiteNVR chỉ ghi hình, có thể đổi thành `GO2RTC=off` (khi đó live dùng HLS như cũ, không có WebRTC).
 - `LIVE_MAX_HEIGHT=720`: live H.265/HEVC được hạ về 720p cho nhẹ CPU (bản ghi vẫn giữ nguyên gốc). Đặt `0` để giữ nguyên.
 - Giới hạn `cpus: "1.00"` phù hợp box yếu; muốn live mượt hơn với nhiều camera HEVC thì nâng lên `"2.00"`.
