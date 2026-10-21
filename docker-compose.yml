@@ -1,7 +1,7 @@
 name: litenvr
 services:
   litenvr:
-    image: ghcr.io/trankhanhduy2929-beep/litenvr:latest
+    image: ghcr.io/trankhanhduy2929-beep/litenvr_docker_zimaos:latest
     container_name: litenvr
     restart: unless-stopped
     ports:

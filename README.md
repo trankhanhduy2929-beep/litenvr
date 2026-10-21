@@ -180,7 +180,7 @@ rest_command:
 
 ## Cách bấm cài 1 chạm trên ZimaOS
 1. Mở giao diện ZimaOS -> nhấn dấu **(+)** góc trên bên phải -> chọn **Install a customized app** -> bấm **Import** ở góc trên.
-2. Dán nội dung file `docker-compose.yml` (đã điền sẵn `ghcr.io/trankhanhduy2929-beep/litenvr:latest`) và chỉnh đường dẫn `/storage` trỏ vào ổ cứng HDD của bạn.
+2. Dán nội dung file `docker-compose.yml` (đã điền sẵn `ghcr.io/trankhanhduy2929-beep/litenvr_docker_zimaos:latest`) và chỉnh đường dẫn `/storage` trỏ vào ổ cứng HDD của bạn.
 3. Bấm **Submit** để cài đặt. Mở ứng dụng và thêm Camera trực tiếp trên giao diện Web!
 
 ### Mẫu riêng cho ZimaOS (kèm giới hạn CPU/RAM)
