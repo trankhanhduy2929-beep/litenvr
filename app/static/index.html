@@ -1957,6 +1957,86 @@
     .onvif-autoopts .form-row { margin-bottom: 8px; }
     .onvif-autoopts .grid-2 { gap: 8px; }
 
+    .storage-fieldset {
+      margin: 0;
+      padding: 0;
+      border: 0;
+      min-width: 0;
+    }
+
+    .storage-fieldset > legend {
+      margin-bottom: 6px;
+      padding: 0;
+      font-size: 13px;
+      color: var(--text-main);
+    }
+
+    .storage-options {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+    }
+
+    .storage-option {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      min-width: 0;
+      padding: 10px;
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-sm);
+      background: var(--bg-elevated);
+      color: var(--text-main);
+      cursor: pointer;
+      transition: border-color 0.16s, background-color 0.16s;
+    }
+
+    .storage-option:hover { border-color: var(--border-hover); }
+
+    .storage-option:has(input:checked) {
+      border-color: var(--accent);
+      background: rgba(var(--accent-rgb), 0.10);
+    }
+
+    .storage-option:has(input:focus-visible) {
+      outline: 2px solid var(--accent-text);
+      outline-offset: 2px;
+    }
+
+    .storage-option input {
+      width: 16px;
+      height: 16px;
+      margin: 2px 0 0;
+      padding: 0;
+      flex: none;
+      accent-color: var(--accent);
+    }
+
+    .storage-option-text {
+      display: flex;
+      min-width: 0;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .storage-option-title {
+      font-size: 12.5px;
+      font-weight: 600;
+      line-height: 1.3;
+    }
+
+    .storage-option-desc {
+      font-size: 11.5px;
+      line-height: 1.35;
+      color: var(--text-muted);
+    }
+
+    .storage-hint {
+      color: var(--text-muted);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+
     .manual-bulk-row {
       display: flex;
       align-items: center;
@@ -2164,6 +2244,7 @@
 
     /* ================= MOBILE RESPONSIVE ================= */
     @media (max-width: 640px) {
+    .storage-options { grid-template-columns: 1fr; }
       .topbar { padding: 10px 14px; }
       .resource-grid { gap: 6px; margin-top: 8px; padding: 0 10px; }
       .resource-card { gap: 4px; padding: 7px 8px; border-radius: 10px; }
@@ -2604,13 +2685,34 @@
               <option value="off">Chỉ xem trực tiếp (Không lưu)</option>
             </select>
           </div>
-          <div class="form-row">
-            <label for="onvifStorageTarget">Nơi lưu bản ghi:</label>
-            <select id="onvifStorageTarget">
-              <option value="both">Cả hai (ổ cứng + Google Drive)</option>
-              <option value="hdd">Chỉ ổ cứng</option>
-              <option value="drive">Chỉ Google Drive</option>
-            </select>
+          <div class="form-row" style="grid-column: 1 / -1;">
+            <fieldset class="storage-fieldset" aria-describedby="onvifStorageHint">
+              <legend>Nơi lưu bản ghi:</legend>
+              <div class="storage-options">
+                <label class="storage-option">
+                  <input type="checkbox" id="onvifStgLocal" checked onchange="updateStorageHint('onvif')">
+                  <span class="storage-option-text">
+                    <span class="storage-option-title">Ổ gốc</span>
+                    <span class="storage-option-desc">Lưu trên ổ của NVR</span>
+                  </span>
+                </label>
+                <label class="storage-option">
+                  <input type="checkbox" id="onvifStgDrive" onchange="updateStorageHint('onvif')">
+                  <span class="storage-option-text">
+                    <span class="storage-option-title">Google Drive</span>
+                    <span class="storage-option-desc">Cần bật ☁️ Google Drive</span>
+                  </span>
+                </label>
+                <label class="storage-option">
+                  <input type="checkbox" id="onvifStgSmb" onchange="updateStorageHint('onvif')">
+                  <span class="storage-option-text">
+                    <span class="storage-option-title">SMB/Samba</span>
+                    <span class="storage-option-desc">Cần bật 💾 lưu trữ ngoài</span>
+                  </span>
+                </label>
+              </div>
+            </fieldset>
+            <small id="onvifStorageHint" class="storage-hint"></small>
           </div>
           <div class="form-row">
             <label for="onvifRoom">Nhóm / Phòng:</label>
@@ -2664,14 +2766,34 @@
             <option value="off">Chỉ xem trực tiếp (Không lưu)</option>
           </select>
         </div>
-        <div class="form-row">
-          <label>Nơi lưu bản ghi:</label>
-          <select id="inpStorageTarget" onchange="updateStorageHint()">
-            <option value="both">Cả hai (ổ cứng + Google Drive)</option>
-            <option value="hdd">Chỉ ổ cứng</option>
-            <option value="drive">Chỉ Google Drive (tự xoá ổ cứng sau khi tải xong)</option>
-          </select>
-          <small id="storageTargetHint" style="color:var(--text-muted);font-size:12px;"></small>
+        <div class="form-row" style="grid-column: 1 / -1;">
+          <fieldset class="storage-fieldset" aria-describedby="storageTargetHint">
+            <legend>Nơi lưu bản ghi:</legend>
+            <div class="storage-options">
+              <label class="storage-option">
+                <input type="checkbox" id="inpStgLocal" checked onchange="updateStorageHint()">
+                <span class="storage-option-text">
+                  <span class="storage-option-title">Ổ gốc</span>
+                  <span class="storage-option-desc">Lưu trên ổ của NVR</span>
+                </span>
+              </label>
+              <label class="storage-option">
+                <input type="checkbox" id="inpStgDrive" onchange="updateStorageHint()">
+                <span class="storage-option-text">
+                  <span class="storage-option-title">Google Drive</span>
+                  <span class="storage-option-desc">Cần bật ☁️ Google Drive</span>
+                </span>
+              </label>
+              <label class="storage-option">
+                <input type="checkbox" id="inpStgSmb" onchange="updateStorageHint()">
+                <span class="storage-option-text">
+                  <span class="storage-option-title">SMB/Samba</span>
+                  <span class="storage-option-desc">Cần bật 💾 lưu trữ ngoài</span>
+                </span>
+              </label>
+            </div>
+          </fieldset>
+          <small id="storageTargetHint" class="storage-hint"></small>
         </div>
       </div>
 
@@ -4113,7 +4235,8 @@
       });
       document.getElementById("inpBrand").value = "custom";
       document.getElementById("inpRecordMode").value = "continuous";
-      document.getElementById("inpStorageTarget").value = "both";
+      setStorageSelection("inp", "hdd", false, false);
+      setStorageSelection("onvif", "hdd", false, false);
       document.getElementById("inpRetentionDays").value = 0;
       document.getElementById("inpTransport").value = "tcp";
       document.getElementById("inpAudio").value = "aac";
@@ -4125,7 +4248,6 @@
       if (testOut) testOut.textContent = "";
       const adv = document.getElementById("camAdvanced");
       if (adv) adv.open = false;
-      updateStorageHint();
       ensureHassSensors();
     }
 
@@ -4158,9 +4280,8 @@
       brandSel.value = c.brand || "custom";
       if (!brandSel.value) brandSel.value = "onvif";
       document.getElementById("inpRecordMode").value = c.record_mode || "continuous";
-      document.getElementById("inpStorageTarget").value = c.storage_target || "both";
+      setStorageSelection("inp", c.storage_target || "both", !!c.storage_smb, !!c.storage_smb_move);
       document.getElementById("inpRetentionDays").value = c.retention_days || 0;
-      updateStorageHint();
       document.getElementById("inpRtsp").value = c.rtsp_url || "";
       document.getElementById("inpSubRtsp").value = c.sub_rtsp_url || "";
       document.getElementById("inpTransport").value = c.rtsp_transport || "tcp";
@@ -4266,13 +4387,55 @@
       try { await loadHassSensors(true); } catch (e) {}
     }
 
-    function updateStorageHint() {
-      const el = document.getElementById("inpStorageTarget");
-      const hint = document.getElementById("storageTargetHint");
-      const v = el ? el.value : "both";
-      if (v === "drive") hint.textContent = "Bản ghi tải lên Google Drive rồi tự xoá khỏi ổ cứng (cần bật ☁️ Google Drive).";
-      else if (v === "both") hint.textContent = "Giữ trên ổ cứng và sao lưu lên Google Drive (nếu đã bật).";
-      else hint.textContent = "Chỉ lưu trên ổ cứng, không tải lên Drive.";
+    function storageSelection(prefix) {
+      const checked = id => {
+        const el = document.getElementById(prefix + id);
+        return !!(el && el.checked);
+      };
+      return { local: checked("StgLocal"), drive: checked("StgDrive"), smb: checked("StgSmb") };
+    }
+
+    function storageTargetFromSelection(sel) {
+      if (!sel.local && !sel.drive && !sel.smb) return "";
+      if (sel.local) return sel.drive ? "both" : "hdd";
+      if (sel.drive) return sel.smb ? "both" : "drive";
+      return "hdd";
+    }
+
+    function storageSmbMove(sel) {
+      return !!(sel.smb && !sel.local);
+    }
+
+    function setStorageSelection(prefix, target, smb, smbMove) {
+      const t = ["hdd", "drive", "both"].includes(target) ? target : "both";
+      const local = !(t === "drive" || (smb && smbMove));
+      const values = {
+        StgLocal: local,
+        StgDrive: t === "both" || t === "drive",
+        StgSmb: !!smb
+      };
+      Object.entries(values).forEach(([id, value]) => {
+        const el = document.getElementById(prefix + id);
+        if (el) el.checked = value;
+      });
+      updateStorageHint(prefix);
+    }
+
+    function updateStorageHint(prefix = "inp") {
+      const el = document.getElementById(prefix === "onvif" ? "onvifStorageHint" : "storageTargetHint");
+      if (!el) return;
+      const sel = storageSelection(prefix);
+      if (!sel.local && !sel.drive && !sel.smb) {
+        el.style.color = "var(--warn-text)";
+        el.textContent = "Chọn ít nhất một nơi lưu bản ghi.";
+        return;
+      }
+      el.style.color = "";
+      const parts = [];
+      if (sel.local) parts.push("giữ trên ổ gốc");
+      if (sel.drive) parts.push(sel.local ? "sao lưu lên Google Drive" : "tải lên Google Drive rồi xoá khỏi ổ gốc");
+      if (sel.smb) parts.push(sel.local ? "sao lưu lên SMB/Samba" : "chuyển lên SMB/Samba rồi xoá khỏi ổ gốc");
+      el.textContent = "Bản ghi sẽ " + parts.join(", ") + ".";
     }
 
     function addSchedRow(w) {
@@ -4348,12 +4511,18 @@
 
     async function saveCamera() {
       const editId = editingCamId;
+      const storage = storageSelection("inp");
+      if (!storage.local && !storage.drive && !storage.smb) {
+        return alert("Chọn ít nhất một nơi lưu bản ghi!");
+      }
       const payload = {
         cam_id: editId || document.getElementById("inpCamId").value.trim(),
         name: document.getElementById("inpCamName").value.trim(),
         brand: document.getElementById("inpBrand").value,
         record_mode: document.getElementById("inpRecordMode").value,
-        storage_target: document.getElementById("inpStorageTarget").value,
+        storage_target: storageTargetFromSelection(storage),
+        storage_smb: storage.smb,
+        storage_smb_move: storageSmbMove(storage),
         retention_days: parseFloat(document.getElementById("inpRetentionDays").value) || 0,
         rtsp_url: document.getElementById("inpRtsp").value.trim(),
         sub_rtsp_url: document.getElementById("inpSubRtsp").value.trim(),
@@ -4438,6 +4607,10 @@
     async function bulkAdd() {
       const lines = document.getElementById("bulkText").value.split("\n").map(l => l.trim()).filter(Boolean);
       if (!lines.length) return alert("Chưa nhập dòng nào.");
+      const storage = storageSelection("inp");
+      if (!storage.local && !storage.drive && !storage.smb) {
+        return alert("Chọn ít nhất một nơi lưu bản ghi!");
+      }
       const items = [];
       for (const line of lines) {
         const parts = line.split("|").map(s => s.trim());
@@ -4446,7 +4619,9 @@
           cam_id: parts[0], name: parts[1], rtsp_url: parts[2],
           sub_rtsp_url: parts[3] || "", brand: "custom",
           record_mode: document.getElementById("inpRecordMode").value,
-          storage_target: document.getElementById("inpStorageTarget").value,
+          storage_target: storageTargetFromSelection(storage),
+          storage_smb: storage.smb,
+          storage_smb_move: storageSmbMove(storage),
           rtsp_transport: document.getElementById("inpTransport").value,
           audio_mode: document.getElementById("inpAudio").value,
           video_codec: document.getElementById("inpVideoCodec").value,
@@ -4717,6 +4892,10 @@
       const selected = [...document.querySelectorAll("#onvifBox .onvif-dev-chk:checked:not(:disabled)")]
         .map(chk => onvifDevices[Number(chk.dataset.idx)]).filter(Boolean);
       if (!selected.length) return onvifSetMsg("Chọn ít nhất một camera để thêm.", "error");
+      const storage = storageSelection("onvif");
+      if (!storage.local && !storage.drive && !storage.smb) {
+        return onvifSetMsg("Chọn ít nhất một nơi lưu bản ghi.", "error");
+      }
       const btn = document.getElementById("btnOnvifAdd");
       const addMsg = document.getElementById("onvifAddMsg");
       onvifBusy(true);
@@ -4731,7 +4910,9 @@
             username: document.getElementById("onvifUser").value.trim(),
             password: document.getElementById("onvifPass").value,
             record_mode: document.getElementById("onvifRecordMode").value,
-            storage_target: document.getElementById("onvifStorageTarget").value,
+            storage_target: storageTargetFromSelection(storage),
+            storage_smb: storage.smb,
+            storage_smb_move: storageSmbMove(storage),
             room: document.getElementById("onvifRoom").value.trim(),
             tags: document.getElementById("onvifTags").value.trim()
           })

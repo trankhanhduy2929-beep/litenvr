@@ -164,7 +164,11 @@ Bấm **☁️ Google Drive** (chỉ tài khoản admin) để bật tính năng
 
 **Cài đặt trong hộp thoại Drive:**
 - **Camera sao lưu**: bỏ trống = tất cả camera.
-- **Nơi lưu (trong Sửa camera)**: mỗi camera chọn *Cả hai* (mặc định — giữ trên ổ cứng + sao lưu Drive nếu đã bật), *Chỉ ổ cứng*, hoặc *Chỉ Google Drive* — bản ghi tải lên Drive xong sẽ **tự xoá khỏi ổ cứng** để tiết kiệm dung lượng. Nếu Drive chưa bật/mất kết nối, camera *Chỉ Drive* vẫn ghi tạm ra ổ cứng và tải lên ngay khi Drive hoạt động lại (không mất dữ liệu). Camera *Chỉ ổ cứng* bị khoá trong danh sách *Camera sao lưu* của hộp thoại Drive.
+- **Nơi lưu bản ghi (trong Sửa camera)**: tick một hoặc nhiều ô **Ổ gốc**, **Google Drive**, **SMB/Samba** — phải chọn ít nhất một nơi:
+  - **Ổ gốc**: giữ bản ghi trên ổ NVR.
+  - **Google Drive**: tải lên Drive nếu đã bật; bỏ **Ổ gốc** thì LiteNVR xoá bản gốc sau khi tải xong. Nếu Drive chưa bật/mất kết nối, camera vẫn ghi tạm ra ổ cứng và tải lên ngay khi Drive hoạt động lại (không mất dữ liệu).
+  - **SMB/Samba**: sao lưu sang share SMB đã cấu hình ở **💾 Lưu trữ ngoài**; bỏ **Ổ gốc** thì xoá bản gốc sau khi chuyển xong. Nếu chọn cả Drive + SMB mà không giữ ổ gốc, LiteNVR giữ bản gốc tới khi cả hai đích nhận xong.
+  - Camera không chọn **Google Drive** sẽ bị khoá trong danh sách *Camera sao lưu* của hộp thoại Drive. Mặc định camera mới: chỉ **Ổ gốc**.
 - **Xem lại bản ghi trên Drive**: bản ghi đã sao lưu (kể cả đã xoá khỏi ổ cứng) vẫn hiện trong tab **Xem lại** với vạch màu xanh ☁️ trên thanh thời gian. Khi bấm phát/tua, LiteNVR **tự tải đoạn đó từ Drive về** (hiện % đang tải ở dòng trạng thái), sau đó phát và tua như bản ghi thường; đoạn đã tải được giữ trên ổ cứng làm cache (tự dọn theo dung lượng/ngày lưu). Nút **⬇️ Xuất clip** quanh sự kiện cũng tự tải các đoạn trên Drive nếu thiếu.
 - **Giới hạn tốc độ**: chừa băng thông internet (Mbps), để 0 = không giới hạn.
 - **Giới hạn dung lượng LiteNVR trên Drive (GB)**: 0 = không giới hạn; vượt mức → tự xoá cũ nhất.

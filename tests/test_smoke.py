@@ -1243,6 +1243,62 @@ class BuilderTests(unittest.TestCase):
         self.assertEqual(self.m.disk_alert_level(90, 85, 95), "warn")
         self.assertEqual(self.m.disk_alert_level(99, 85, 95), "crit")
 
+    def test_camera_storage_choices_update_smb_membership(self):
+        m = self.m
+        saved_cams = m.CONFIG.get("cameras")
+        saved_backup = m.CONFIG.get("backup")
+        from fastapi.testclient import TestClient
+        client = TestClient(m.app)
+        client.__enter__()
+        try:
+            m.CONFIG["cameras"] = {}
+            m.CONFIG["backup"] = {"enabled": False, "kind": "smb", "cameras": []}
+            base = {"brand": "custom", "rtsp_url": "rtsp://127.0.0.1:1/x",
+                    "record_mode": "off"}
+            client.post("/api/cameras", json={**base, "cam_id": "camS1", "name": "S1"},
+                        headers=auth())
+            client.post("/api/cameras", json={**base, "cam_id": "camS2", "name": "S2"},
+                        headers=auth())
+            r = client.post("/api/cameras",
+                            json={**base, "cam_id": "camS1", "name": "S1", "storage_smb": False},
+                            headers=auth())
+            self.assertEqual(r.status_code, 200)
+            self.assertEqual(m.CONFIG["backup"]["cameras"], ["camS2"])
+            cams = client.get("/api/cameras", headers=auth()).json()
+            self.assertFalse(cams["camS1"]["storage_smb"])
+            self.assertTrue(cams["camS2"]["storage_smb"])
+            client.post("/api/cameras",
+                        json={**base, "cam_id": "camS2", "name": "S2", "storage_smb": False},
+                        headers=auth())
+            self.assertEqual(m.CONFIG["backup"]["cameras"], [])
+        finally:
+            client.__exit__(None, None, None)
+            m.CONFIG["cameras"] = saved_cams or {}
+            m.CONFIG["backup"] = saved_backup or {}
+
+    def test_backup_camera_flag_removes_local_after_copy(self):
+        m = self.m
+        dest = os.path.join(m.STORAGE_DIR, "backupdest")
+        os.makedirs(dest, exist_ok=True)
+        rec = os.path.join(m.RECORDINGS_DIR, "camMove")
+        os.makedirs(rec, exist_ok=True)
+        fname = "2026-03-04_05-06-07.mp4"
+        fpath = os.path.join(rec, fname)
+        with open(fpath, "wb") as f:
+            f.write(b"video")
+        saved_cams = m.CONFIG.get("cameras")
+        saved_backup = m.CONFIG.get("backup")
+        try:
+            m.CONFIG.setdefault("cameras", {})["camMove"] = {"storage_smb_move": True}
+            m.CONFIG["backup"] = {"enabled": True, "kind": "folder", "folder_path": dest,
+                                  "mode": "copy", "cameras": ["camMove"]}
+            m._backup_file(f"camMove/{fname}")
+        finally:
+            m.CONFIG["cameras"] = saved_cams or {}
+            m.CONFIG["backup"] = saved_backup or {}
+        self.assertTrue(os.path.isfile(os.path.join(dest, "2026-03-04", "camMove", fname)))
+        self.assertFalse(os.path.exists(fpath))
+
     def test_backup_scan_and_folder_copy(self):
         m = self.m
         dest = os.path.join(m.STORAGE_DIR, "backupdest")

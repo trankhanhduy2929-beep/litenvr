@@ -3056,6 +3056,8 @@ class CameraItem(BaseModel):
     record_mode: str = "continuous"  # continuous | motion | off
     video_codec: str = "auto"        # auto | copy | h264 (h264 = tương thích trình duyệt)
     storage_target: str = "both"     # hdd | drive | both — nơi lưu bản ghi
+    storage_smb: Optional[bool] = None  # None = giữ lựa chọn hiện tại; True/False = chọn sao lưu ngoài
+    storage_smb_move: bool = False   # Xoá bản gốc sau khi chuyển SMB (khi không giữ ổ gốc)
     room: str = ""                   # Nhóm/phòng để lọc camera
     tags: str = ""                   # Nhãn tự do, cách nhau dấu phẩy
     onvif_port: int = 80             # Cổng ONVIF/PTZ (nếu khác 80)
@@ -3122,6 +3124,8 @@ class OnvifAutoAddReq(BaseModel):
     password: str = ""
     record_mode: str = "continuous"
     storage_target: str = "both"
+    storage_smb: Optional[bool] = None
+    storage_smb_move: bool = False
     room: str = ""
     tags: str = ""
 
@@ -3387,9 +3391,11 @@ def api_latest_snapshots(request: Request):
 @app.get("/api/cameras")
 def get_cameras(request: Request):
     cameras = CONFIG.get("cameras", {})
+    backup_cams = _backup_effective_cameras()
     u = getattr(request.state, "user", None) or {}
     if u.get("role") == "admin" or not AUTH_ENABLED:
-        return cameras
+        return {cid: {**dict(cam), "storage_smb": cid in backup_cams}
+                for cid, cam in cameras.items()}
     out = {}
     for cam_id, cam in cameras.items():
         if u.get("cameras") and cam_id not in u["cameras"]:
@@ -3397,6 +3403,7 @@ def get_cameras(request: Request):
         c = dict(cam)
         c["rtsp_url"] = mask_secrets(c.get("rtsp_url", ""))
         c["sub_rtsp_url"] = mask_secrets(c.get("sub_rtsp_url", ""))
+        c["storage_smb"] = cam_id in backup_cams
         out[cam_id] = c
     return out
 
@@ -3423,6 +3430,7 @@ def _camera_record(item: CameraItem) -> dict:
         "record_mode": item.record_mode,
         "video_codec": item.video_codec,
         "storage_target": item.storage_target if item.storage_target in ("hdd", "drive", "both") else "both",
+        "storage_smb_move": bool(item.storage_smb_move),
         "room": item.room,
         "tags": item.tags,
         "onvif_port": int(item.onvif_port or 80),
@@ -3476,6 +3484,8 @@ def add_or_update_camera(item: CameraItem):
         raise HTTPException(status_code=400, detail="Mã camera không hợp lệ (không dùng / \\ hoặc ký tự điều khiển)")
     stop_camera_worker(cam_id)
     CONFIG.setdefault("cameras", {})[cam_id] = _camera_record(item)
+    if item.storage_smb is not None:
+        _set_camera_smb(cam_id, item.storage_smb)
     save_config(CONFIG)
     refresh_go2rtc()
     start_camera_worker(cam_id)
@@ -3491,6 +3501,8 @@ def bulk_add_cameras(req: BulkCamerasReq):
             continue
         stop_camera_worker(cam_id)
         CONFIG.setdefault("cameras", {})[cam_id] = _camera_record(item)
+        if item.storage_smb is not None:
+            _set_camera_smb(cam_id, item.storage_smb)
         start_camera_worker(cam_id)
         added += 1
     save_config(CONFIG)
@@ -3565,6 +3577,8 @@ def api_onvif_auto_add(req: OnvifAutoAddReq):
             onvif_port=int((info or {}).get("onvif_port") or dev.port or 80),
             record_mode=req.record_mode if req.record_mode in ("continuous", "motion", "off") else "continuous",
             storage_target=req.storage_target if req.storage_target in ("hdd", "drive", "both") else "both",
+            storage_smb=req.storage_smb,
+            storage_smb_move=req.storage_smb_move,
             room=req.room,
             tags=req.tags,
         )
@@ -3574,6 +3588,9 @@ def api_onvif_auto_add(req: OnvifAutoAddReq):
         results.append({"status": "added", "host": host, "name": label, "cam_id": cam_id})
 
     if added_ids:
+        if req.storage_smb is not None:
+            for cam_id in added_ids:
+                _set_camera_smb(cam_id, req.storage_smb)
         save_config(CONFIG)
         refresh_go2rtc()
         for cam_id in added_ids:
@@ -3722,6 +3739,9 @@ def delete_camera(cam_id: str):
     if cam_id in CONFIG.get("cameras", {}):
         stop_camera_worker(cam_id)
         del CONFIG["cameras"][cam_id]
+        b = CONFIG.get("backup") or {}
+        if b.get("cameras"):
+            b["cameras"] = [c for c in b["cameras"] if c != cam_id]
         codec_cache.pop(cam_id, None)
         cam_status.pop(cam_id, None)
         with _cam_offline_lock:
@@ -4771,6 +4791,26 @@ def _backup_cfg() -> dict:
     return CONFIG.get("backup") or {}
 
 
+def _backup_effective_cameras() -> set:
+    """Camera đang được sao lưu ngoài; danh sách rỗng = tất cả camera."""
+    selected = _backup_cfg().get("cameras") or []
+    if selected:
+        return {str(c) for c in selected}
+    return set(CONFIG.get("cameras", {}).keys())
+
+
+def _set_camera_smb(cam_id: str, enabled: bool):
+    """Bật/tắt camera trong danh sách sao lưu ngoài mà không làm mất lựa chọn khác."""
+    b = CONFIG.setdefault("backup", dict(DEFAULT_CONFIG["backup"]))
+    selected = _backup_effective_cameras()
+    if enabled:
+        selected.add(cam_id)
+    else:
+        selected.discard(cam_id)
+    known = CONFIG.get("cameras", {})
+    b["cameras"] = sorted(c for c in selected if c in known)
+
+
 def _backup_done() -> set:
     try:
         rows = db_conn().execute("SELECT path FROM backup_done").fetchall()
@@ -5012,7 +5052,8 @@ def _backup_file(rel: str, ftp=None, smb=None):
     conn.execute("INSERT OR REPLACE INTO backup_done (path, cam_id, size, ts) VALUES (?,?,?,?)",
                  (rel, cam, size, time.time()))
     conn.commit()
-    if cfg.get("mode") == "move":
+    cam_cfg = CONFIG.get("cameras", {}).get(cam) or {}
+    if cfg.get("mode") == "move" or cam_cfg.get("storage_smb_move"):
         try:
             os.remove(src)
         except OSError:
