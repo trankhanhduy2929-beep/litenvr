@@ -785,6 +785,53 @@ class ApiTests(_AppCase):
         self.assertEqual(self.client.get("/snapshots/snapa_x.jpg", headers=u).status_code, 200)
         self.assertEqual(self.client.get("/snapshots/snapb_x.jpg", headers=u).status_code, 403)
 
+    def test_camera_snapshot_endpoint_and_scope(self):
+        for cam in ("snapapi1", "snapapi2"):
+            self.client.post("/api/cameras", json={"cam_id": cam, "name": cam,
+                                                   "rtsp_url": "rtsp://127.0.0.1:1/x"}, headers=auth())
+        self.client.post("/api/users", json={"username": "snapapiuser", "password": "secret1",
+                                             "role": "user",
+                                             "perms": {"live": True, "playback": False, "events": False,
+                                                       "export": False, "ptz": False, "lock": False},
+                                             "cameras": ["snapapi1"]}, headers=auth())
+        os.makedirs(self.m.SNAPSHOTS_DIR, exist_ok=True)
+        for cam in ("snapapi1", "snapapi2"):
+            with open(os.path.join(self.m.SNAPSHOTS_DIR, cam + "_latest.jpg"), "wb") as f:
+                f.write(b"\xff\xd8\xff\xd9")
+        u = auth("snapapiuser", "secret1")
+        r = self.client.get("/api/cameras/snapapi1/snapshot.jpg", headers=u)
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.headers.get("content-type"), "image/jpeg")
+        self.assertEqual(r.content, b"\xff\xd8\xff\xd9")
+        self.assertEqual(self.client.get("/api/cameras/snapapi2/snapshot.jpg", headers=u).status_code, 403)
+        self.assertEqual(self.client.get("/api/cameras/nope/snapshot.jpg", headers=u).status_code, 404)
+
+    def test_hls_playlist_waits_for_first_segment(self):
+        cam = "hlswaitapi"
+        self.client.post("/api/cameras", json={"cam_id": cam, "name": cam,
+                                                "rtsp_url": "rtsp://127.0.0.1:1/x",
+                                                "record_mode": "off"}, headers=auth())
+        cam_dir = os.path.join(self.m.HLS_DIR, cam)
+        os.makedirs(cam_dir, exist_ok=True)
+        playlist = os.path.join(cam_dir, "live.m3u8")
+        def write_playlist():
+            time.sleep(0.8)
+            with open(playlist, "w") as f:
+                f.write("#EXTM3U\n#EXT-X-VERSION:3\n")
+        timer = threading.Timer(0, write_playlist)
+        timer.start()
+        try:
+            started = time.monotonic()
+            r = self.client.get(f"/hls/{cam}/live.m3u8", headers=auth())
+            elapsed = time.monotonic() - started
+            self.assertEqual(r.status_code, 200)
+            self.assertGreaterEqual(elapsed, 0.5)
+            self.assertIn("#EXTM3U", r.text)
+        finally:
+            timer.join()
+            self.client.delete(f"/api/cameras/{cam}", headers=auth())
+            shutil.rmtree(cam_dir, ignore_errors=True)
+
     def test_motion_ai_camera_scope(self):
         for cam in ("motiona", "motionb"):
             self.client.post("/api/cameras", json={"cam_id": cam, "name": cam,

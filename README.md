@@ -42,7 +42,7 @@ Trên Web UI, bấm **🛰️ Home Assistant**:
 LiteNVR tự mở WebSocket tới HA (`/api/websocket`), xác thực bằng token, đăng ký `state_changed`; chỉ khi cảm biến **chuyển sang** giá trị kích hoạt mới ghi hình + snapshot cho camera tương ứng (cảm biến giữ nguyên trạng thái sẽ không kích hoạt lặp). Sự kiện ghi nhãn tuỳ chọn, mặc định `Chuyển động (HA: <entity_id>)`. Tự kết nối lại khi mất mạng.
 
 ## MQTT Discovery (entity camera cho badge/card)
-LiteNVR có thể tự gửi **MQTT Discovery** để Home Assistant tạo entity `camera.litenvr_<camera>` cho từng camera. Entity dùng ảnh snapshot cập nhật định kỳ, phù hợp badge/card ảnh; **không phải luồng live**.
+LiteNVR có thể tự gửi **MQTT Discovery** để Home Assistant tạo entity `camera.litenvr_<slug>` cho từng camera (`slug` là mã camera đã chuẩn hoá: chữ thường, khoảng trắng/ký tự đặc biệt thay bằng `_`). Entity dùng ảnh snapshot cập nhật định kỳ, phù hợp badge/card ảnh; **không phải luồng live**.
 
 1. Trong HA, cài và bật add-on **Mosquitto broker**; vào **Settings → Devices & Services → MQTT** để bật tích hợp MQTT nếu chưa có.
 2. Tạo một **user HA riêng cho MQTT** (**Settings → People → Users → Add user**), không dùng tài khoản admin. Mosquitto add-on xác thực bằng user HA.
@@ -52,8 +52,8 @@ LiteNVR có thể tự gửi **MQTT Discovery** để Home Assistant tạo entit
    - Nhập **cổng** (mặc định `1883`), **tài khoản/mật khẩu MQTT** vừa tạo.
    - Giữ **Discovery prefix** `homeassistant` và **Base topic** `litenvr` nếu không có nhu cầu đặc biệt.
    - Đặt **chu kỳ ảnh** (5–300 giây), bấm **Kiểm tra MQTT** rồi **Lưu**.
-4. HA tự phát hiện thiết bị **LiteNVR** và các entity `camera.litenvr_<cam_id>`. Vào **Settings → Devices & Services → MQTT → LiteNVR**, hoặc thêm badge/card bằng entity camera. Tên hiển thị lấy theo tên camera trong LiteNVR.
-5. Ảnh được publish retained lên `<base_topic>/camera/<cam_id>/image`; trạng thái online/offline nằm ở `<base_topic>/status`. Khi LiteNVR mất kết nối, entity chuyển unavailable.
+4. HA tự phát hiện thiết bị **LiteNVR** và các entity `camera.litenvr_<slug>`. Vào **Settings → Devices & Services → MQTT → LiteNVR**, hoặc thêm badge/card bằng entity camera. Tên hiển thị lấy theo tên camera trong LiteNVR.
+5. Ảnh được publish retained lên `<base_topic>/camera/<slug>/image`; trạng thái online/offline nằm ở `<base_topic>/status`. Khi LiteNVR mất kết nối, entity chuyển unavailable.
 
 Ví dụ card hiển thị ảnh camera:
 ```yaml
@@ -65,9 +65,26 @@ show_state: false
 ```
 
 **Lưu ý:**
-- Đây là camera ảnh tĩnh (snapshot), không có video. Muốn card live, dùng **Generic Camera** trỏ vào luồng H.264 (hoặc luồng phụ) của camera, hoặc mở LiteNVR để xem WebRTC/HLS.
+- Đây là camera ảnh tĩnh (snapshot), không có video. Muốn xem live trong HA, xem mục **Live trong Home Assistant** bên dưới.
 - Nếu không thấy entity: kiểm tra MQTT integration đã bật, đúng user/mật khẩu, đúng `discovery_prefix`, và log LiteNVR. Entity cũ có thể cần xoá trong **MQTT → Devices** nếu đổi `base_topic`.
 - Mật khẩu MQTT lưu trong `config.json` trên thiết bị; nên dùng user MQTT riêng, quyền tối thiểu.
+
+## Live trong Home Assistant (Generic Camera HLS)
+MQTT Discovery chỉ gửi ảnh snapshot. Để xem live trong HA, dùng **Generic Camera** trỏ vào HLS của LiteNVR; vẫn giữ entity MQTT để hiển thị badge/card ảnh.
+
+1. Trong LiteNVR, bấm **🛰️ Home Assistant** → mở **Live trong Home Assistant (Generic Camera)**. Nhập địa chỉ LiteNVR mà HA truy cập được (thường là `http://IP-NAS:3333`, **không dùng URL Ingress**) rồi copy URL live/ảnh của camera. URL live có dạng `http://IP-NAS:3333/hls/<camera>/live.m3u8`.
+2. Trong HA, vào **Settings → Devices & Services → Add Integration → Generic Camera**:
+   - **Stream Source**: dán URL live vừa copy.
+   - **Still Image URL**: dán URL ảnh nếu muốn ảnh tĩnh riêng; có thể **để trống** để HA tự tạo ảnh từ stream. Endpoint ảnh là `http://IP-NAS:3333/api/cameras/<camera>/snapshot.jpg` và trả 404 khi camera chưa có snapshot nào.
+   - **Username/Password**: dùng tài khoản LiteNVR (không phải tài khoản HA). Generic Camera sẽ dùng Basic Auth cho cả stream và ảnh.
+   - Nếu có mục **Authentication**, chọn **Basic**; **RTSP transport** có thể để mặc định/TCP.
+3. Lưu cấu hình. HA sẽ tạo entity `camera.<ten_generic_camera>`; thêm vào dashboard bằng card **Picture Glance** hoặc **WebRTC Camera** nếu cần độ trễ thấp.
+
+**Lưu ý:**
+- Nên dùng **luồng phụ H.264** cho live. H.265 có thể không phát trực tiếp trên Chrome; HA sẽ phải transcode và tốn CPU.
+- Mở cổng **3333** từ HA tới LiteNVR (hoặc route mạng tương đương). Không dùng URL `/api/hassio_ingress/...` vì URL này gắn phiên đăng nhập HA và không phù hợp cho ffmpeg.
+- Nếu LiteNVR chạy HTTPS, dùng `https://...` và đảm bảo HA tin cậy chứng chỉ; nếu dùng HTTP, Generic Camera có thể cần bật **Verify SSL** phù hợp.
+- URL live do LiteNVR tạo đã mã hoá camera ID; nếu tự nhập, thay khoảng trắng bằng `%20`.
 
 ## Nhãn AI (người/xe) từ bộ nhận diện ngoài
 Gửi sự kiện từ bộ nhận diện AI bất kỳ (Frigate, DeepStack, CodeProject.AI, Node-RED…) vào endpoint:

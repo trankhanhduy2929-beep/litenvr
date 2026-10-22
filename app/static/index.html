@@ -3270,7 +3270,7 @@
           <input type="checkbox" id="mqttEnabled" style="width:auto;">
           MQTT Discovery (camera snapshot)
         </label>
-        <div style="font-size:12px;color:var(--text-muted);margin:4px 0 10px;">Home Assistant tự tạo entity <b>camera.litenvr_&lt;camera&gt;</b> để gắn badge/card. Ảnh cập nhật định kỳ, không phải luồng live.</div>
+        <div style="font-size:12px;color:var(--text-muted);margin:4px 0 10px;">Home Assistant tự tạo entity <b>camera.litenvr_&lt;slug&gt;</b> (mã camera chuẩn hoá) để gắn badge/card. Ảnh cập nhật định kỳ, không phải luồng live.</div>
         <div class="grid-2">
           <div class="form-row">
             <label>MQTT host</label>
@@ -3316,6 +3316,19 @@
         <div style="font-size:12px;color:var(--text-muted);margin:2px 0 4px;">Mosquitto add-on: dùng <b>core-mosquitto</b>, cổng <b>1883</b>. Nếu broker mở cổng trên HA thì điền IP HA. Cần tạo user MQTT trong HA trước.</div>
         <div id="mqttStatus" style="font-size:12px;color:var(--text-muted);margin:4px 0 0;"></div>
       </div>
+
+      <details class="adv-section" style="margin-top:14px;">
+        <summary>Live trong Home Assistant (Generic Camera)</summary>
+        <div class="adv-section-body" style="padding-top:10px;">
+          <div style="font-size:12px;color:var(--text-muted);margin:0 0 10px;">MQTT chỉ gửi ảnh. Để xem live, thêm <b>Generic Camera</b> trong Home Assistant với <b>Stream Source</b> bên dưới; Still Image URL có thể để trống hoặc dùng URL ảnh.</div>
+          <div class="form-row">
+            <label>Địa chỉ LiteNVR (HA truy cập được)</label>
+            <input id="liveBaseUrl" placeholder="http://192.168.1.10:3333" oninput="renderLiveUrls()">
+          </div>
+          <div id="liveUrlList" style="font-size:12px;"></div>
+          <div style="font-size:12px;color:var(--text-muted);margin-top:8px;">Nhập tài khoản LiteNVR ở ô Username/Password của Generic Camera (không dán mật khẩu vào URL). Nên dùng luồng phụ H.264; H.265 có thể không phát trên Chrome. Mở cổng <b>3333</b> và không dùng URL Ingress cho Generic Camera.</div>
+        </div>
+      </details>
 
       <div style="display:flex; gap:8px; justify-content:space-between; margin-top:14px; flex-wrap:wrap;">
         <div style="display:flex; gap:8px; flex-wrap:wrap;">
@@ -5196,6 +5209,82 @@
       };
     }
 
+    function defaultLiveBase() {
+      const host = location.hostname || "127.0.0.1";
+      if (location.pathname.startsWith("/api/hassio_ingress/") || location.port === "8123") {
+        return `http://${host}:3333`;
+      }
+      return location.origin;
+    }
+
+    function renderLiveUrls() {
+      const box = document.getElementById("liveUrlList");
+      const baseEl = document.getElementById("liveBaseUrl");
+      if (!box || !baseEl) return;
+      let base = baseEl.value.trim();
+      if (!base) base = defaultLiveBase();
+      try { localStorage.setItem("nvrLiveBase", base); } catch (e) {}
+      base = base.replace(/\/+$/, "");
+      const ids = Object.keys(cameras).sort();
+      if (!ids.length) {
+        box.textContent = "Chưa có camera. Thêm camera để lấy URL live.";
+        return;
+      }
+      box.innerHTML = ids.map(id => {
+        const live = `${base}/hls/${encodeURIComponent(id)}/live.m3u8`;
+        const still = `${base}/api/cameras/${encodeURIComponent(id)}/snapshot.jpg`;
+        return `<div style="padding:8px 0;border-top:1px solid var(--border-subtle);">
+          <div style="font-weight:600;margin-bottom:4px;">${esc((cameras[id] && cameras[id].name) || id)}</div>
+          <div style="display:flex;gap:6px;margin:4px 0;">
+            <input readonly value="${esc(live)}" aria-label="Stream Source cho ${esc(id)}" style="flex:1;min-width:0;font-size:11px;">
+            <button type="button" onclick="copyLiveUrl(this)">Copy live</button>
+          </div>
+          <div style="display:flex;gap:6px;margin:4px 0;">
+            <input readonly value="${esc(still)}" aria-label="Still Image URL cho ${esc(id)}" style="flex:1;min-width:0;font-size:11px;">
+            <button type="button" onclick="copyLiveUrl(this)">Copy ảnh</button>
+          </div>
+        </div>`;
+      }).join("");
+    }
+
+    function initLiveUrls() {
+      const baseEl = document.getElementById("liveBaseUrl");
+      if (!baseEl) return;
+      let saved = "";
+      try { saved = localStorage.getItem("nvrLiveBase") || ""; } catch (e) {}
+      baseEl.value = saved || defaultLiveBase();
+      renderLiveUrls();
+    }
+
+    function copyLiveUrl(btn) {
+      const input = btn.parentElement.querySelector("input");
+      if (!input) return;
+      const text = input.value;
+      if (btn.dataset.copied === "1") return;
+      const done = () => {
+        const old = btn.textContent;
+        btn.dataset.copied = "1";
+        btn.style.minWidth = btn.offsetWidth + "px";
+        btn.textContent = "Đã copy";
+        setTimeout(() => {
+          btn.textContent = old;
+          btn.style.minWidth = "";
+          delete btn.dataset.copied;
+        }, 1200);
+      };
+      if (navigator.clipboard) {
+        navigator.clipboard.writeText(text).then(done, () => {
+          input.select();
+          try { document.execCommand("copy"); } catch (e) {}
+          done();
+        });
+      } else {
+        input.select();
+        try { document.execCommand("copy"); } catch (e) {}
+        done();
+      }
+    }
+
     function renderMqttStatus(mq) {
       const el = document.getElementById("mqttStatus");
       if (!el) return;
@@ -5234,6 +5323,7 @@
       document.getElementById("mqttBaseTopic").value = mq.base_topic || "litenvr";
       document.getElementById("mqttSnapshotInterval").value = mq.snapshot_interval || 15;
       renderMqttStatus(mq);
+      initLiveUrls();
       document.getElementById("hassModal").classList.add("open");
     }
     function closeHassModal() { document.getElementById("hassModal").classList.remove("open"); }

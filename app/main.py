@@ -41,7 +41,7 @@ mimetypes.add_type("video/mp2t", ".ts")
 NVR_USER = os.environ.get("NVR_USER", "admin")
 NVR_PASS = os.environ.get("NVR_PASS", "admin")
 AUTH_ENABLED = os.environ.get("NVR_AUTH", "on").lower() not in ("off", "0", "false", "no")
-APP_VERSION = (os.environ.get("LITENVR_VERSION") or "1.9.8").strip() or "1.9.8"
+APP_VERSION = (os.environ.get("LITENVR_VERSION") or "1.9.9").strip() or "1.9.9"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 _STATIC_CAND = os.path.join(BASE_DIR, "static")
@@ -276,6 +276,11 @@ async def hls_no_cache(request: Request, call_next):
         if len(parts) > 2:
             cam_id = parts[2]
             ensure_live(cam_id)
+            if path.endswith("/live.m3u8") and cam_id in CONFIG.get("cameras", {}):
+                playlist = os.path.join(HLS_DIR, cam_id, "live.m3u8")
+                deadline = time.monotonic() + 8
+                while not os.path.isfile(playlist) and time.monotonic() < deadline:
+                    await asyncio.sleep(0.2)
     resp = await call_next(request)
     if path.startswith("/hls/"):
         resp.headers["Cache-Control"] = "no-store"
@@ -1019,6 +1024,8 @@ def path_permission(request: Request) -> Optional[str]:
         return None
     if method == "GET" and path == "/api/cameras":
         return "view"
+    if method == "GET" and re.fullmatch(r"/api/cameras/[^/]+/snapshot\.jpg", path):
+        return "view"
     if path in ("/api/motion", "/api/ai/detect"):
         return "live"
     if path.startswith("/api/drive/play/"):
@@ -1085,6 +1092,7 @@ worker_lock = threading.Lock()
 _shutdown = threading.Event()
 FFMPEG_THREADS = max(1, min(8, int(os.environ.get("FFMPEG_THREADS", "2") or "2")))
 _snapshot_lock = threading.Lock()
+_ha_snapshot_lock = threading.Lock()
 _snapshot_slots = threading.BoundedSemaphore(2)
 _snapshot_active: Dict[str, str] = {}
 _snapshot_processes: Dict[str, subprocess.Popen] = {}
@@ -3467,6 +3475,33 @@ def api_latest_snapshots(request: Request):
     if u.get("role") != "admin" and u.get("cameras"):
         out = {k: v for k, v in out.items() if k in u["cameras"]}
     return out
+
+@app.get("/api/cameras/{cam_id}/snapshot.jpg")
+async def api_camera_snapshot(cam_id: str, request: Request):
+    if cam_id not in CONFIG.get("cameras", {}):
+        raise HTTPException(status_code=404, detail="Camera không tồn tại")
+    assert_cam_access(request, cam_id)
+    path = ""
+    if not _go2rtc.get("running") and GO2RTC_MODE != "off":
+        try:
+            await asyncio.to_thread(start_go2rtc)
+        except Exception:
+            pass
+    tag = hashlib.sha1(cam_id.encode("utf-8")).hexdigest()[:8]
+    dest = os.path.join(MQTT_SNAPSHOT_DIR, f"ha_{_mqtt_slug(cam_id)}_{tag}.jpg")
+    with _ha_snapshot_lock:
+        try:
+            if _go2rtc_snapshot(cam_id, dest):
+                path = dest
+        except Exception:
+            path = ""
+    if not path:
+        path = _latest_snapshot(cam_id)
+    if not _valid_snapshot(path):
+        raise HTTPException(status_code=404,
+                            detail="Chưa có ảnh snapshot; mở live hoặc chờ sự kiện chuyển động")
+    return FileResponse(path, media_type="image/jpeg",
+                        headers={"Cache-Control": "no-store"})
 
 @app.get("/api/cameras")
 def get_cameras(request: Request):
