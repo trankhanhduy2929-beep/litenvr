@@ -54,7 +54,7 @@ Nguyên nhân phổ biến: camera dùng **H.265/HEVC** — trình duyệt (Chro
 - Muốn chỉnh tay: **+ Quản lý Camera** → sửa camera → mở **⚙️ Tùy chọn nâng cao** → **Codec video**:
   - **Tự động phát hiện** (khuyến nghị).
   - **Copy**: nhẹ CPU nhất, chỉ dùng khi camera chắc chắn là H.264.
-  - **Luôn chuyển sang H.264**: tương thích mọi trình duyệt, tốn CPU hơn.
+  - **Luồng live luôn chuyển sang H.264**: tương thích mọi trình duyệt, tốn CPU hơn; **bản ghi vẫn giữ codec gốc**.
 - Phát bản ghi cũ quay bằng H.265: LiteNVR tự chuyển mã khi trình duyệt báo lỗi (không cần quay lại).
 - Nút **🔍 Chẩn đoán** hiển thị trạng thái ffmpeg, codec dò được và log lỗi gần nhất.
 - **Âm thanh Live**: bấm nút **🔇 Tiếng / 🔊 Tiếng** cạnh **Trực tiếp** để bật/tắt. LiteNVR tự chuyển âm thanh G.711/AAC của camera (EZVIZ, Hikvision…) sang AAC để trình duyệt phát được; nếu camera kén tiếng hoặc không có audio, chọn **Tắt âm thanh** trong phần nâng cao của camera.
@@ -68,7 +68,7 @@ Nguyên nhân phổ biến: camera dùng **H.265/HEVC** — trình duyệt (Chro
 
 **Thanh thời gian:** kéo hoặc bấm trên thanh để tua; rê chuột để xem mốc giờ; vạch vàng hiển thị vị trí đang phát.
 
-**Hình bị "vỡ"/rác khi xem qua go2rtc/restream:** thường do luồng H.264 ở profile/màu mà trình duyệt không giải mã (High 4:2:2, 4:4:4, 10-bit). LiteNVR tự dò `profile` + `pix_fmt`; nếu không phải H.264 8-bit 4:2:0 (`yuv420p`/`yuvj420p`) sẽ tự chuyển mã sang H.264 chuẩn. Có thể ép thủ công bằng **Codec video = Luôn chuyển sang H.264**. Ngoài ra LiteNVR ưu tiên TCP (`prefer_tcp`) để tránh mất gói.
+**Hình bị "vỡ"/rác khi xem qua go2rtc/restream:** thường do luồng H.264 ở profile/màu mà trình duyệt không giải mã (High 4:2:2, 4:4:4, 10-bit). LiteNVR tự dò `profile` + `pix_fmt`; nếu không phải H.264 8-bit 4:2:0 (`yuv420p`/`yuvj420p`) sẽ tự chuyển mã sang H.264 chuẩn. Có thể ép thủ công bằng **Codec live = Luồng live luôn chuyển sang H.264**. Ngoài ra LiteNVR ưu tiên TCP (`prefer_tcp`) để tránh mất gói.
 
 ## Thêm camera & nhiều giao thức
 - **Hai phương thức trong Quản lý Camera**:
@@ -88,7 +88,7 @@ Nguyên nhân phổ biến: camera dùng **H.265/HEVC** — trình duyệt (Chro
 - **Dùng luồng phụ cho Live**: điền "Luồng phụ" trong phần sửa camera (vd Imou/Dahua `subtype=1`, Hikvision `/Streaming/Channels/102`) — live thường là H.264 nên **không cần chuyển mã** (CPU gần như 0).
 - **Live theo nhu cầu**: khi không có ai xem, LiteNVR không tạo nhánh HLS/ffmpeg live; chỉ còn tiến trình ghi hình. Khi mở lại live, luồng tự khởi động trong vài giây; nếu dùng WebRTC thì camera được go2rtc kéo trực tiếp. Có thể chỉnh thời gian chờ: biến môi trường `LIVE_IDLE_STOP_SEC` (mặc định 30 giây).
 - **Ghi hình lưu nguyên codec (`-c:v copy`)**: CPU gần như bằng 0; chỉ chuyển mã khi bạn thực sự xem.
-- **Giới hạn luồng giải mã/lọc ffmpeg**: mọi ffmpeg (ghi hình, live, phát lại, xuất clip, chụp snapshot) đều bị giới hạn `-threads` cho **giải mã + bộ lọc**, không chỉ bộ mã hoá. Đổi bằng biến môi trường `FFMPEG_THREADS` (mặc định 2, kẹp 1–8). Hạ số luồng giúp giảm đỉnh RAM/CPU khi camera 2K/4K hoặc HEVC.
+- **Giới hạn luồng giải mã/lọc ffmpeg**: mọi ffmpeg (ghi hình, live, phát lại, xuất clip, chụp snapshot) đều bị giới hạn `-threads` cho **giải mã + bộ lọc**, không chỉ bộ mã hoá. Đổi bằng biến môi trường `FFMPEG_THREADS` (mặc định 2, kẹp 1–8). Hạ số luồng giúp giảm đỉnh RAM/CPU khi camera 2K/4K hoặc HEVC. Nếu một ffmpeg vẫn phình RAM, LiteNVR tự khởi động lại khi RSS vượt `CAMERA_MAX_RSS_MB` (mặc định 900 MB, `0` = tắt) sau 60 giây grace.
 - **Chụp snapshot có kiểm soát**: tối đa **2 ffmpeg chụp ảnh** chạy song song toàn hệ thống và **1 mỗi camera** (gộp yêu cầu trùng), tự dừng sau 12 giây nếu treo. Tránh dồn nhiều ffmpeg mở luồng cùng lúc khi có sự kiện chuyển động liên tục.
 - **Preset transcode nhẹ**: `ultrafast` + 2 luồng, `zerolatency`.
 - **Đệm Motion trong RAM**: tắt tuỳ chọn "Đệm chuyển động trong RAM" trong **⚙️ Lưu trữ** để ghi đệm ra đĩa nếu box ít RAM.
@@ -191,6 +191,7 @@ rest_command:
 Nếu chạy ZimaOS và muốn cấu hình "chuẩn" như bản đang chạy (cổng **9895**, WebRTC **8556 TCP/UDP**, ổ `/DATA/NVR`, giới hạn **1 CPU / 4GB RAM**, tmpfs cho HLS + buffer), dùng file **`docker-compose.zimaos.yml`**:
 - `GO2RTC=on`: bật go2rtc nội bộ để dùng chung một phiên camera cho ghi hình + WebRTC. Nếu bạn **đã có go2rtc trong Frigate** và muốn LiteNVR chỉ ghi hình, có thể đổi thành `GO2RTC=off` (khi đó live dùng HLS như cũ, không có WebRTC).
 - `LIVE_MAX_HEIGHT=720`: live H.265/HEVC được hạ về 720p cho nhẹ CPU (bản ghi vẫn giữ nguyên gốc). Đặt `0` để giữ nguyên.
+- `CAMERA_MAX_RSS_MB=900`: tự khởi động lại ffmpeg camera nếu RAM vượt ngưỡng (chống rò rỉ/quá tải). `0` để tắt; `CAMERA_RSS_GRACE_SEC=60` là thời gian chờ trước khi kiểm tra.
 - Giới hạn `cpus: "1.00"` phù hợp box yếu; muốn live mượt hơn với nhiều camera HEVC thì nâng lên `"2.00"`.
 
 Cả 2 file đều import được theo cách ở trên; nhớ sửa `source` của volume cho đúng ổ cứng của bạn.

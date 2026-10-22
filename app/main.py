@@ -2007,12 +2007,10 @@ def build_ffmpeg_cmd(cam_id: str, cam_info: dict, video_codec: Optional[str] = N
     main_url, sub_url = cam_source_urls(cam_id, cam_info)
     audio_mode = cam_info.get("audio_mode", "aac")  # aac | none | copy
     record_mode = cam_info.get("record_mode", "continuous")  # continuous | motion | off
-    explicit = cam_info.get("video_codec", "auto")
     if video_codec is None:
         video_codec = resolve_video_codec(cam_id, cam_info)  # copy | h264 cho LIVE
-    # Bản ghi lưu NGUYÊN codec gốc để nhẹ CPU (kể cả HEVC). Khi xem lại sẽ tự
-    # chuyển mã. Chỉ ép H.264 khi người dùng chọn thủ công "h264".
-    record_codec = "h264" if explicit == "h264" else "copy"
+    # Bản ghi LUÔN copy codec gốc để nhẹ CPU/RAM (kể cả HEVC). Khi xem lại sẽ tự
+    # chuyển mã. Lựa chọn "h264" chỉ ép transcode cho LUỒNG LIVE.
 
     # H.264 transcode cho LUỒNG LIVE khi camera dùng H.265/HEVC (trình duyệt không phát được HEVC)
     # ultrafast + 2 thread: giảm mạnh CPU/RAM so với veryfast mà vẫn đủ nét cho live.
@@ -2048,13 +2046,7 @@ def build_ffmpeg_cmd(cam_id: str, cam_info: dict, video_codec: Optional[str] = N
     # Nhánh 1: Ghi hình (Continuous lưu thẳng HDD, Motion lưu tạm vào RAM buffer 15s/đoạn)
     if record_mode in ("continuous", "motion"):
         cmd.extend(["-map", "0:v:0"])
-        if record_codec == "h264":
-            cmd.extend(h264_args)
-            if audio_mode == "none":
-                cmd.extend(["-an"])
-            else:
-                cmd.extend(["-map", "0:a?", "-c:a", "aac"])
-        elif audio_mode == "aac":
+        if audio_mode == "aac":
             cmd.extend(["-map", "0:a?", "-c:v", "copy", "-c:a", "aac"])
         elif audio_mode == "copy":
             cmd.extend(["-map", "0:a?", "-c:v", "copy", "-c:a", "copy"])
@@ -2215,8 +2207,13 @@ def health_snapshot() -> Dict[str, dict]:
     return out
 
 
+# Tự khởi động lại ffmpeg nếu RSS vượt ngưỡng (chống rò rỉ/4K transcode quá nặng).
+# 0 = tắt. Chỉ áp dụng sau thời gian grace để tránh restart lúc ffmpeg mới khởi động.
+CAMERA_MAX_RSS_MB = max(0, int(os.environ.get("CAMERA_MAX_RSS_MB", "900") or "0"))
+CAMERA_RSS_GRACE_SEC = max(10, int(os.environ.get("CAMERA_RSS_GRACE_SEC", "60") or "60"))
+
 def stream_health_supervisor():
-    """Theo dõi tiến độ ffmpeg mỗi camera; khởi động lại nếu luồng đứng quá lâu."""
+    """Theo dõi tiến độ ffmpeg mỗi camera; khởi động lại nếu luồng đứng hoặc RAM quá cao."""
     stall_sec = 20
     while not _shutdown.is_set():
         try:
@@ -2234,6 +2231,20 @@ def stream_health_supervisor():
                     _restart_camera_process(cam_id, proc)
                 elif not stalled:
                     h["restart_attempted"] = False
+                    if CAMERA_MAX_RSS_MB and proc.poll() is None:
+                        started = float(h.get("started_at") or 0)
+                        if started and now - started >= CAMERA_RSS_GRACE_SEC:
+                            rss_mb = _proc_rss_kb(proc.pid) / 1024.0
+                            if rss_mb > CAMERA_MAX_RSS_MB:
+                                h["rss_high"] = h.get("rss_high", 0) + 1
+                                if h["rss_high"] >= 3:
+                                    h["rss_high"] = 0
+                                    log_event("warn",
+                                              f"RAM ffmpeg {rss_mb:.0f} MB > {CAMERA_MAX_RSS_MB} MB, "
+                                              "khởi động lại để giải phóng", cam_id)
+                                    _restart_camera_process(cam_id, proc)
+                            else:
+                                h["rss_high"] = 0
         except Exception as e:
             log_event("warn", f"stream_health_supervisor: {e}")
         _shutdown.wait(10)
@@ -2340,7 +2351,8 @@ def _camera_worker_loop(cam_id: str, token: threading.Event):
                 st["_sched"] = sched
                 st["_live_mode"] = include_live
                 cam_health[cam_id] = {"last_frame_at": time.time(), "fps": None,
-                                      "stalled": False, "restart_attempted": False}
+                                      "stalled": False, "restart_attempted": False,
+                                      "started_at": started}
         except Exception as e:
             if token.is_set() or _shutdown.is_set():
                 break

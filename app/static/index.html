@@ -2707,11 +2707,11 @@
 
           <div class="grid-2">
             <div class="form-row">
-              <label>Codec video (chọn H.264 nếu live/bản ghi bị đen):</label>
+              <label>Codec live (chọn H.264 nếu live bị đen; bản ghi luôn giữ codec gốc):</label>
               <select id="inpVideoCodec">
                 <option value="auto">Tự động phát hiện (Khuyến nghị)</option>
                 <option value="copy">Copy (Nhẹ CPU nhất - chỉ dùng khi camera là H.264)</option>
-                <option value="h264">Luôn chuyển sang H.264 (Tương thích mọi trình duyệt)</option>
+                <option value="h264">Luồng live luôn chuyển sang H.264 (bản ghi giữ codec gốc)</option>
               </select>
             </div>
             <div class="form-row">

@@ -1078,6 +1078,14 @@ class BuilderTests(unittest.TestCase):
         self.assertIn("libx264", cmd)
         self.assertIn("copy", cmd)
 
+    def test_explicit_h264_only_transcodes_live_not_recording(self):
+        cmd = self.m.build_ffmpeg_cmd("cam", self._cam(record_mode="continuous", video_codec="h264"), include_live=False)
+        self.assertNotIn("libx264", cmd)
+        self.assertIn("copy", cmd)
+
+        live = self.m.build_ffmpeg_cmd("cam", self._cam(record_mode="continuous", video_codec="h264"), include_live=True)
+        self.assertIn("libx264", live)
+
 
 class LifecycleTests(unittest.TestCase):
     @classmethod
