@@ -6549,13 +6549,20 @@
       try {
         const r = await fetch(`api/status/${currentCam}`);
         const d = await r.json();
+        const stateTxt = d.running ? "đang chạy"
+          : (d.stop_reason === "idle" ? "đã dừng (chờ người xem)"
+          : (d.stop_reason === "stopped" ? "đã dừng (không phải lỗi)"
+          : (d.stop_reason === "restart" ? "đang khởi động lại"
+          : (d.expected ? "LỖI: đã dừng" : "đã dừng (chờ xem live)"))));
+        const hlsAge = d.hls_age_sec == null ? "" : ` (playlist cập nhật ${d.hls_age_sec}s trước)`;
         const lines = [
-          `Camera: ${currentCam}`,
+          `Camera: ${currentCam} — ${stateTxt}`,
           `ffmpeg đang chạy: ${d.running ? "Có" : "KHÔNG"}`,
-          `HLS sẵn sàng: ${d.hls_ready ? "Có" : "Chưa"}`,
+          `HLS sẵn sàng: ${d.hls_ready ? "Có" : "Chưa"}${hlsAge}`,
           `Codec dò được: ${d.detected_codec || "(chưa dò / cam chưa kết nối)"}${d.detected_profile ? " / " + d.detected_profile : ""}${d.detected_pix_fmt ? " / " + d.detected_pix_fmt : ""}`,
           d.detect_failed ? "Lưu ý: chưa dò được codec (camera có thể đang bận/đã bị app khác như Frigate/go2rtc chiếm session) → tạm chuyển mã H.264." : "",
           d.rate_limited ? "Camera đang TỪ CHỐI kết nối (5XX): đã đủ số phiên RTSP hoặc camera tạm khoá do kết nối quá nhanh. Giảm số app kéo stream (Frigate/go2rtc/app hãng) hoặc dùng restream của go2rtc." : "",
+          d.last_warning ? `Cảnh báo: ${d.last_warning}` : "",
           d.last_error ? `Lỗi cuối: ${d.last_error}` : "",
           (d.log && d.log.length) ? "Log gần nhất:\n" + d.log.slice(-8).join("\n") : ""
         ].filter(Boolean);

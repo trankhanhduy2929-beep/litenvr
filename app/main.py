@@ -41,7 +41,7 @@ mimetypes.add_type("video/mp2t", ".ts")
 NVR_USER = os.environ.get("NVR_USER", "admin")
 NVR_PASS = os.environ.get("NVR_PASS", "admin")
 AUTH_ENABLED = os.environ.get("NVR_AUTH", "on").lower() not in ("off", "0", "false", "no")
-APP_VERSION = (os.environ.get("LITENVR_VERSION") or "1.9.9").strip() or "1.9.9"
+APP_VERSION = (os.environ.get("LITENVR_VERSION") or "1.9.10").strip() or "1.9.10"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 _STATIC_CAND = os.path.join(BASE_DIR, "static")
@@ -2285,6 +2285,14 @@ def _needs_transcode(cam_id: str) -> bool:
         return True
     return not _is_browser_safe_h264(codec, st.get("detected_pix_fmt", ""), st.get("detected_profile", ""))
 
+def _clear_hls_playlist(cam_id: str):
+    """Xoá playlist cũ để HA/UI không đọc nhầm HLS của phiên ffmpeg trước."""
+    try:
+        os.remove(os.path.join(HLS_DIR, cam_id, "live.m3u8"))
+    except OSError:
+        pass
+
+
 def start_camera_worker(cam_id: str):
     with worker_lock:
         if _shutdown.is_set():
@@ -2296,15 +2304,28 @@ def start_camera_worker(cam_id: str):
             old.set()
         token = threading.Event()
         worker_tokens[cam_id] = token
+        proc = ffmpeg_processes.get(cam_id)
+    if not proc or proc.poll() is not None:
+        _clear_hls_playlist(cam_id)
     threading.Thread(target=_camera_worker_loop, args=(cam_id, token), daemon=True).start()
 
 _PROGRESS_KEYS = {"frame", "fps", "bitrate", "total_size", "out_time_us", "out_time_ms",
                   "out_time", "dup_frames", "drop_frames", "speed", "progress"}
 _PROGRESS_FRAME_KEYS = {"frame", "fps", "out_time_us", "out_time_ms", "out_time"}
+_PROGRESS_STREAM_Q_RE = re.compile(r"^stream_\d+_\d+_q\s*=")
+_REPEATED_LOG_RE = re.compile(r"^last message repeated\b", re.I)
+_AUDIO_AU_ERROR_RE = re.compile(r"error parsing au headers", re.I)
+
+
+def _is_audio_au_warning(line: str) -> bool:
+    """Lỗi gói AAC/AU của camera: FFmpeg bỏ gói audio nhưng video vẫn chạy."""
+    return bool(_AUDIO_AU_ERROR_RE.search(line or ""))
 
 
 def _note_progress(line: str, cam_id: str) -> bool:
     """Cập nhật sức khoẻ luồng từ một dòng tiến độ ffmpeg. Trả True nếu là dòng tiến độ."""
+    if _PROGRESS_STREAM_Q_RE.match(line.strip()):
+        return True
     key, _, val = line.partition("=")
     key = key.strip()
     if key not in _PROGRESS_KEYS:
@@ -2461,6 +2482,9 @@ def _camera_worker_loop(cam_id: str, token: threading.Event):
         record_needed = sched != "off"
         viewers = viewers_active(cam_id)
         if not record_needed and not viewers:
+            st["stop_reason"] = "idle"
+            st["last_error"] = ""
+            st["last_warning"] = ""
             log_event("info", "Dừng live (không còn người xem)", cam_id)
             break
         resolved = resolve_video_codec(cam_id, cam_info)
@@ -2471,6 +2495,8 @@ def _camera_worker_loop(cam_id: str, token: threading.Event):
             break
         eff_info = dict(cam_info)
         eff_info["record_mode"] = sched if sched != "off" else "off"
+        if include_live:
+            _clear_hls_playlist(cam_id)
         cmd = build_ffmpeg_cmd(cam_id, eff_info, video_codec=resolved, include_live=include_live)
         started = time.time()
         try:
@@ -2482,6 +2508,11 @@ def _camera_worker_loop(cam_id: str, token: threading.Event):
                 ffmpeg_processes[cam_id] = proc
                 st["running"] = True
                 st["last_start"] = int(started)
+                st["last_error"] = ""
+                st["last_warning"] = ""
+                st["last_exit_code"] = None
+                st["last_exit_at"] = 0
+                st["stop_reason"] = ""
                 st["_sched"] = sched
                 st["_live_mode"] = include_live
                 cam_health[cam_id] = {"last_frame_at": time.time(), "fps": None,
@@ -2492,6 +2523,7 @@ def _camera_worker_loop(cam_id: str, token: threading.Event):
                 break
             st["running"] = False
             st["last_error"] = str(e)
+            st["stop_reason"] = "start_failed"
             log_event("error", f"ffmpeg không khởi động được: {e}", cam_id)
             print(f"[LiteNVR] ffmpeg lỗi khởi động cho {cam_id}: {e}", flush=True)
             if token.wait(backoff):
@@ -2503,6 +2535,9 @@ def _camera_worker_loop(cam_id: str, token: threading.Event):
 
         def _hint(line: str) -> str:
             low = line.lower()
+            if _is_audio_au_warning(line):
+                return ("Lỗi âm thanh RTSP (AU headers) — video vẫn chạy; nếu live vẫn lỗi, "
+                        "đặt Âm thanh = Không trong cấu hình camera: " + line)
             if ("server returned 404" in low or "404 not found" in low) and _go2rtc.get("running"):
                 return ("Nguồn camera lỗi khi lấy qua restream go2rtc (sai URL/tài khoản hoặc cam đang bận): " + line)
             if "5xx" in low or "server returned 5" in low or "453" in low or "454" in low or "461" in low:
@@ -2518,6 +2553,7 @@ def _camera_worker_loop(cam_id: str, token: threading.Event):
 
         def _drain(p, cid, status):
             warned = False
+            audio_warned = False
             try:
                 for line in p.stderr:
                     line = line.strip()
@@ -2526,8 +2562,16 @@ def _camera_worker_loop(cam_id: str, token: threading.Event):
                     if _note_progress(line, cid):
                         continue
                     status["log"].append(line)
-                    status["last_error"] = _hint(line)
+                    if _REPEATED_LOG_RE.match(line):
+                        continue
                     low = line.lower()
+                    if _is_audio_au_warning(line):
+                        status["last_warning"] = _hint(line)
+                        if not audio_warned:
+                            audio_warned = True
+                            log_event("warn", status["last_warning"], cid)
+                        continue
+                    status["last_error"] = _hint(line)
                     if ("5xx" in low or "server returned 5" in low
                             or " 453 " in low or "453 " in low
                             or "500 internal" in low or "503 " in low or "461 " in low):
@@ -2542,16 +2586,30 @@ def _camera_worker_loop(cam_id: str, token: threading.Event):
         drain = threading.Thread(target=_drain, args=(proc, cam_id, st), daemon=True)
         drain.start()
         proc.wait()
+        exit_code = proc.returncode
         drain.join(timeout=2)
         if not drain.is_alive() and proc.stderr:
             proc.stderr.close()
+        _clear_hls_playlist(cam_id)
         with worker_lock:
             if ffmpeg_processes.get(cam_id) is proc:
                 ffmpeg_processes.pop(cam_id, None)
             if worker_tokens.get(cam_id) is token:
                 st["running"] = False
+                st["last_exit_code"] = exit_code
+                st["last_exit_at"] = int(time.time())
+                st["stop_reason"] = "exited"
+        restart_requested = bool(st.pop("_restart_requested", False))
+        immediate_restart = bool(st.pop("_restart_immediate", False))
         if token.is_set() or _shutdown.is_set():
+            st["stop_reason"] = "stopped"
             break
+        if immediate_restart:
+            st["stop_reason"] = "restart"
+            log_event("info", "Khởi động lại luồng ngay để áp dụng chế độ live", cam_id)
+            continue
+        if not restart_requested and not st.get("last_error"):
+            st["last_error"] = f"ffmpeg đã dừng (mã {exit_code}); kiểm tra kết nối/cấu hình camera"
         # Backoff:
         #  - vừa chạy ổn trong >10s: chờ ngắn rồi thử lại
         #  - camera trả 5XX (đủ phiên / chống spam → khoá tạm): chờ DÀI để nhả khoá
@@ -2568,10 +2626,14 @@ def _camera_worker_loop(cam_id: str, token: threading.Event):
             log_event("warn", f"Kết nối lỗi, thử lại sau {backoff}s", cam_id)
         if token.wait(backoff):
             break
+    cleared = False
     with worker_lock:
         if worker_tokens.get(cam_id) is token:
             worker_tokens.pop(cam_id, None)
             st["running"] = False
+            cleared = True
+    if cleared:
+        _clear_hls_playlist(cam_id)
 
 
 def stop_camera_worker(cam_id: str):
@@ -2583,12 +2645,19 @@ def stop_camera_worker(cam_id: str):
         if proc:
             _terminate_process(proc)
             ffmpeg_processes.pop(cam_id, None)
-        cam_status.setdefault(cam_id, {})["running"] = False
+        st = cam_status.setdefault(cam_id, {})
+        st["running"] = False
+        st["stop_reason"] = "stopped"
+        st["last_error"] = ""
+        st["last_warning"] = ""
 
 
-def _restart_camera_process(cam_id: str, proc):
+def _restart_camera_process(cam_id: str, proc, immediate: bool = False):
     with worker_lock:
         if ffmpeg_processes.get(cam_id) is proc:
+            st = cam_status.setdefault(cam_id, {})
+            st["_restart_requested"] = True
+            st["_restart_immediate"] = bool(immediate)
             _terminate_process(proc)
 
 def ensure_live(cam_id: str):
@@ -2608,7 +2677,7 @@ def ensure_live(cam_id: str):
         st["_mode_ts"] = now
         proc = ffmpeg_processes.get(cam_id)
         if proc and proc.poll() is None:
-            threading.Thread(target=_restart_camera_process, args=(cam_id, proc), daemon=True).start()
+            threading.Thread(target=_restart_camera_process, args=(cam_id, proc, True), daemon=True).start()
 
 def live_supervisor():
     """Bật/tắt nhánh live theo số người xem để tiết kiệm CPU/RAM."""
@@ -2653,7 +2722,7 @@ def live_supervisor():
                         log_event("info", "Đổi nhánh live theo người xem (tiết kiệm CPU)", cam_id)
                         proc = ffmpeg_processes.get(cam_id)
                         if proc and proc.poll() is None:
-                            _restart_camera_process(cam_id, proc)
+                            _restart_camera_process(cam_id, proc, immediate=True)
                 # Hồi phục sau khi ổ đĩa hết đầy: khởi động lại ghi hình cho camera đang cần
                 if not low and sched != "off" and not st.get("running"):
                     start_camera_worker(cam_id)
@@ -7354,26 +7423,45 @@ def get_logs(limit: int = 200):
 
 @app.get("/api/status/{cam_id}")
 def get_cam_status(cam_id: str, request: Request):
-    hls_path = os.path.join(HLS_DIR, cam_id, "live.m3u8")
-    hls_ready = os.path.exists(hls_path) and (time.time() - os.path.getmtime(hls_path) < 15)
+    cam = (CONFIG.get("cameras") or {}).get(cam_id) or {}
     st = cam_status.get(cam_id, {})
+    hls_path = os.path.join(HLS_DIR, cam_id, "live.m3u8")
+    try:
+        hls_age = max(0.0, time.time() - os.path.getmtime(hls_path))
+    except OSError:
+        hls_age = None
+    # Chỉ báo HLS sẵn sàng khi ffmpeg live thật sự đang chạy và playlist vừa được ghi.
+    # Playlist cũ còn trên tmpfs không được khiến UI/HA tưởng luồng vẫn sống.
+    hls_ready = bool(st.get("running") and st.get("_live_mode")
+                     and hls_age is not None and hls_age < 15)
     u = getattr(request.state, "user", None) or {}
     logs = list(st.get("log", []))
     if AUTH_ENABLED and u.get("role") != "admin":
         logs = [mask_secrets(x) for x in logs]
     off = camera_offline_state(cam_id)
+    last_error = st.get("last_error", "")
+    last_warning = st.get("last_warning", "")
+    if AUTH_ENABLED and u.get("role") != "admin":
+        last_error = mask_secrets(last_error)
+        last_warning = mask_secrets(last_warning)
     return {
         "running": bool(st.get("running")),
         "expected": off["expected"],
         "offline": off["offline"],
         "offline_since": off["down_since"],
+        "record_mode": schedule_record_mode(cam) if cam else "off",
+        "stop_reason": st.get("stop_reason", ""),
+        "last_exit_code": st.get("last_exit_code"),
+        "last_exit_at": st.get("last_exit_at", 0),
         "hls_ready": hls_ready,
+        "hls_age_sec": round(hls_age, 1) if hls_age is not None else None,
         "detected_codec": st.get("detected_codec", ""),
         "detected_profile": st.get("detected_profile", ""),
         "detected_pix_fmt": st.get("detected_pix_fmt", ""),
         "detect_failed": bool(st.get("detect_failed", False)),
         "rate_limited": bool(st.get("rate_limited", False)),
-        "last_error": mask_secrets(st.get("last_error", "")) if AUTH_ENABLED and u.get("role") != "admin" else st.get("last_error", ""),
+        "last_warning": last_warning,
+        "last_error": last_error,
         "log": logs,
     }
 

@@ -94,6 +94,31 @@ class ApiTests(_AppCase):
         self.assertEqual(self.client.delete("/api/cameras/cam1", headers=auth()).status_code, 200)
         self.assertEqual(self.client.get("/api/cameras", headers=auth()).json(), {})
 
+    def test_hls_ready_requires_running_live_worker(self):
+        cam = "cam-hls-state"
+        payload = {"cam_id": cam, "name": "HLS state", "brand": "custom",
+                   "rtsp_url": "rtsp://127.0.0.1:1/x", "record_mode": "off"}
+        self.assertEqual(self.client.post("/api/cameras", json=payload, headers=auth()).status_code, 200)
+        hls_dir = os.path.join(self.m.HLS_DIR, cam)
+        os.makedirs(hls_dir, exist_ok=True)
+        with open(os.path.join(hls_dir, "live.m3u8"), "w", encoding="utf-8") as f:
+            f.write("#EXTM3U\n")
+        st = self.m.cam_status.setdefault(cam, {})
+        try:
+            d = self.client.get(f"/api/status/{cam}", headers=auth()).json()
+            self.assertFalse(d["hls_ready"])
+            st["running"] = True
+            st["_live_mode"] = True
+            d = self.client.get(f"/api/status/{cam}", headers=auth()).json()
+            self.assertTrue(d["hls_ready"])
+            self.assertIsNotNone(d["hls_age_sec"])
+            st["_live_mode"] = False
+            d = self.client.get(f"/api/status/{cam}", headers=auth()).json()
+            self.assertFalse(d["hls_ready"])
+        finally:
+            self.client.delete(f"/api/cameras/{cam}", headers=auth())
+            self.m.cam_status.pop(cam, None)
+
     def test_webrtc_offer_proxy_adds_host_candidate(self):
         payload = {"cam_id": "cam-webrtc", "name": "Cam", "brand": "custom",
                    "rtsp_url": "rtsp://127.0.0.1:1/x", "record_mode": "off"}
@@ -1325,12 +1350,19 @@ class BuilderTests(unittest.TestCase):
         self.assertTrue(self.m._note_progress("fps=25.0", "c1"))
         self.assertTrue(self.m._note_progress("frame=120", "c1"))
         self.assertTrue(self.m._note_progress("progress=continue", "c1"))
+        self.assertTrue(self.m._note_progress("stream_0_0_q=-1.0", "c1"))
+        self.assertTrue(self.m._note_progress("stream_1_0_q=-1.0", "c1"))
         self.assertFalse(self.m._note_progress("some rtsp error", "c1"))
         snap = self.m.health_snapshot()
         self.assertEqual(snap["c1"]["fps"], 25.0)
         self.assertEqual(snap["c1"]["state"], "continue")
         self.assertIsNotNone(snap["c1"]["age_sec"])
         self.assertIn("-progress", self.m.build_ffmpeg_cmd("cam", self._cam()))
+
+    def test_audio_au_headers_is_recoverable_warning(self):
+        line = "[rtsp @ 0x55a114f72400] Error parsing AU headers"
+        self.assertTrue(self.m._is_audio_au_warning(line))
+        self.assertFalse(self.m._is_audio_au_warning("Video: h264, yuvj420p"))
 
     def test_hls_low_latency_flags(self):
         cmd = self.m.build_ffmpeg_cmd("cam", self._cam(record_mode="copy", video_codec="copy"), include_live=True)
@@ -1787,6 +1819,73 @@ class LifecycleTests(unittest.TestCase):
         proc = subprocess.Popen([sys.executable, "-c", "import signal,time; signal.signal(signal.SIGTERM, lambda *a: None); time.sleep(60)"])
         self.m._terminate_process(proc, timeout=2)
         self.assertIsNotNone(proc.poll())
+
+    def test_immediate_restart_skips_backoff(self):
+        m = self.m
+        cam = "cam-restart-flag"
+        class FakeProc:
+            returncode = None
+            def poll(self):
+                return None
+            def terminate(self):
+                pass
+            def wait(self, timeout=None):
+                return None
+        proc = FakeProc()
+        st = m.cam_status.setdefault(cam, {})
+        m.ffmpeg_processes[cam] = proc
+        try:
+            m._restart_camera_process(cam, proc, immediate=True)
+            self.assertTrue(st.get("_restart_requested"))
+            self.assertTrue(st.get("_restart_immediate"))
+        finally:
+            m.ffmpeg_processes.pop(cam, None)
+            m.cam_status.pop(cam, None)
+
+    def test_worker_ignores_progress_lines_and_audio_warning(self):
+        m = self.m
+        cam = "cam-log-classify"
+        m.CONFIG["cameras"][cam] = {
+            "name": "Log classify", "rtsp_url": "rtsp://127.0.0.1:1/x",
+            "record_mode": "continuous", "video_codec": "copy", "audio_mode": "aac",
+        }
+        m.cam_status[cam] = {}
+
+        class FakeProc:
+            returncode = 1
+            def __init__(self, *args, **kwargs):
+                self.stderr = io.StringIO(
+                    "stream_0_0_q=-1.0\n"
+                    "[rtsp @ 0x55a114f72400] Error parsing AU headers\n"
+                    "Last message repeated 77 times\n"
+                    "stream_1_0_q=-1.0\n"
+                )
+            def poll(self):
+                return self.returncode
+            def wait(self, timeout=None):
+                return self.returncode
+
+        try:
+            with mock.patch.object(m.subprocess, "Popen", FakeProc):
+                m.start_camera_worker(cam)
+                token = m.worker_tokens.get(cam)
+                deadline = time.time() + 4
+                while time.time() < deadline and m.cam_status[cam].get("last_exit_code") is None:
+                    time.sleep(0.02)
+                if token:
+                    token.set()
+                while time.time() < deadline and m.worker_tokens.get(cam) is not None:
+                    time.sleep(0.02)
+            st = m.cam_status[cam]
+            self.assertIn("Error parsing AU headers", "\n".join(st["log"]))
+            self.assertNotIn("stream_", "\n".join(st["log"]))
+            self.assertIn("AU headers", st.get("last_warning", ""))
+            self.assertNotIn("stream_", st.get("last_error", ""))
+            self.assertNotIn("AU headers", st.get("last_error", ""))
+        finally:
+            m.CONFIG["cameras"].pop(cam, None)
+            m.cam_status.pop(cam, None)
+            m.cam_health.pop(cam, None)
 
     def test_snapshot_slots_bounded(self):
         m = self.m
