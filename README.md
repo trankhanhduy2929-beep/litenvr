@@ -107,6 +107,7 @@ Nguyên nhân phổ biến: camera dùng **H.265/HEVC** — trình duyệt (Chro
 - Phát bản ghi cũ quay bằng H.265: LiteNVR dò codec **trước khi phát**; nếu không an toàn với trình duyệt sẽ tự chuyển mã sang H.264/AAC (không cần quay lại, không phụ thuộc vào việc trình duyệt có báo lỗi hay không).
 - Nút **🔍 Chẩn đoán** hiển thị trạng thái ffmpeg/HLS, codec, cảnh báo và lỗi gần nhất. Camera không ghi hình và không có người xem thì ffmpeg dừng là bình thường; HLS cũ không còn được báo "sẵn sàng".
 - Log **`Error parsing AU headers`** là âm thanh RTSP lỗi (video vẫn chạy). Nếu live vẫn lỗi, sửa camera → **⚙️ Tùy chọn nâng cao** → **Âm thanh** = **Không**.
+- Log **`PPS id out of range`**, **`SPS/VPS`** hoặc **`Error parsing NAL unit`** của H.265 thường do NVR/go2rtc gửi tham số không chuẩn; video vẫn có thể chạy bình thường. Nếu hình không lên, dùng **luồng phụ H.264** làm `sub_rtsp_url` cho live.
 - **Âm thanh Live**: bấm nút **🔇 Tiếng / 🔊 Tiếng** cạnh **Trực tiếp** để bật/tắt. LiteNVR tự chuyển âm thanh G.711/AAC của camera (EZVIZ, Hikvision…) sang AAC để trình duyệt phát được; nếu camera kén tiếng hoặc không có audio, chọn **Tắt âm thanh** trong phần nâng cao của camera.
 
 **Lưu ý luồng HEVC/H.265 4K (Imou/Dahua/Hanet/EZVIZ):** live view phải chuyển mã realtime nên tốn CPU. Nếu box yếu, dùng **luồng phụ H.264** làm `sub_rtsp_url` cho live (Imou `subtype=1`; Hanet `/user:hanet;pwd:...` kèm stream phụ) và để luồng chính HEVC cho ghi hình.

@@ -1850,12 +1850,14 @@ class LifecycleTests(unittest.TestCase):
             "record_mode": "continuous", "video_codec": "copy", "audio_mode": "aac",
         }
         m.cam_status[cam] = {}
+        m.codec_cache[cam] = (("stale", "tcp", False), {"codec_name": "h264"}, time.time() - 1)
 
         class FakeProc:
             returncode = 1
             def __init__(self, *args, **kwargs):
                 self.stderr = io.StringIO(
                     "stream_0_0_q=-1.0\n"
+                    "[hevc @ 0x55a114f70000] PPS id out of range: 0\n"
                     "[rtsp @ 0x55a114f72400] Error parsing AU headers\n"
                     "Last message repeated 77 times\n"
                     "stream_1_0_q=-1.0\n"
@@ -1878,10 +1880,16 @@ class LifecycleTests(unittest.TestCase):
                     time.sleep(0.02)
             st = m.cam_status[cam]
             self.assertIn("Error parsing AU headers", "\n".join(st["log"]))
+            self.assertIn("PPS id out of range", "\n".join(st["log"]))
             self.assertNotIn("stream_", "\n".join(st["log"]))
             self.assertIn("AU headers", st.get("last_warning", ""))
             self.assertNotIn("stream_", st.get("last_error", ""))
             self.assertNotIn("AU headers", st.get("last_error", ""))
+            self.assertNotIn("PPS", st.get("last_error", ""))
+            self.assertNotIn(cam, m.codec_cache)
+            self.assertEqual(m.CODEC_CACHE_TTL_SEC, 300)
+            self.assertTrue(m._is_hevc_source_warning("[hevc @ 0x1] PPS id out of range: 0"))
+            self.assertFalse(m._is_hevc_source_warning("[h264 @ 0x1] PPS id out of range: 0"))
         finally:
             m.CONFIG["cameras"].pop(cam, None)
             m.cam_status.pop(cam, None)

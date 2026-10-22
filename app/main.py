@@ -41,7 +41,7 @@ mimetypes.add_type("video/mp2t", ".ts")
 NVR_USER = os.environ.get("NVR_USER", "admin")
 NVR_PASS = os.environ.get("NVR_PASS", "admin")
 AUTH_ENABLED = os.environ.get("NVR_AUTH", "on").lower() not in ("off", "0", "false", "no")
-APP_VERSION = (os.environ.get("LITENVR_VERSION") or "1.9.10").strip() or "1.9.10"
+APP_VERSION = (os.environ.get("LITENVR_VERSION") or "1.9.11").strip() or "1.9.11"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 _STATIC_CAND = os.path.join(BASE_DIR, "static")
@@ -1144,7 +1144,9 @@ cam_health: Dict[str, dict] = {}
 # Trạng thái mất kết nối camera (chỉ báo khi camera cần chạy ghi hình)
 _cam_offline: Dict[str, dict] = {}
 _cam_offline_lock = threading.Lock()
-# Cache codec đã dò được: cam_id -> (url_key, codec_name)
+# Cache codec đã dò được: cam_id -> (url_key, info, thời điểm dò)
+# TTL ngắn để nếu NVR/go2rtc đổi codec trên cùng URL thì LiteNVR tự dò lại.
+CODEC_CACHE_TTL_SEC = 300
 codec_cache: Dict[str, tuple] = {}
 
 # Nhật ký sự kiện toàn ứng dụng (cho tab Log trên UI)
@@ -1169,7 +1171,8 @@ def detect_video_codec(cam_id: str, cam_info: dict):
     _, feed_url = cam_source_urls(cam_id, cam_info)
     key = (feed_url, cam_info.get("rtsp_transport", "tcp"), _go2rtc.get("running", False))
     cached = codec_cache.get(cam_id)
-    if cached and cached[0] == key:
+    if (cached and len(cached) >= 3 and cached[0] == key
+            and time.time() - cached[2] < CODEC_CACHE_TTL_SEC):
         return cached[1]
     cmd = [
         "ffprobe", "-v", "error",
@@ -1189,7 +1192,7 @@ def detect_video_codec(cam_id: str, cam_info: dict):
     except Exception:
         info = {}
     if info.get("codec_name"):
-        codec_cache[cam_id] = (key, info)
+        codec_cache[cam_id] = (key, info, time.time())
         return info
     return {}
 
@@ -2315,11 +2318,27 @@ _PROGRESS_FRAME_KEYS = {"frame", "fps", "out_time_us", "out_time_ms", "out_time"
 _PROGRESS_STREAM_Q_RE = re.compile(r"^stream_\d+_\d+_q\s*=")
 _REPEATED_LOG_RE = re.compile(r"^last message repeated\b", re.I)
 _AUDIO_AU_ERROR_RE = re.compile(r"error parsing au headers", re.I)
+_HEVC_SOURCE_WARN_RE = re.compile(
+    r"(?:\b(?:pps|sps|vps)\s+id\s+out\s+of\s+range\b"
+    r"|\berror\s+parsing\s+nal\s+unit\b"
+    r"|\bcould\s+not\s+find\s+ref\b)",
+    re.I,
+)
 
 
 def _is_audio_au_warning(line: str) -> bool:
     """Lỗi gói AAC/AU của camera: FFmpeg bỏ gói audio nhưng video vẫn chạy."""
     return bool(_AUDIO_AU_ERROR_RE.search(line or ""))
+
+
+def _is_hevc_source_warning(line: str) -> bool:
+    """Tham số H.265 (PPS/SPS/NAL) không chuẩn từ NVR/go2rtc.
+
+    Nhiều NVR Hikvision gửi PPS không đúng chuẩn nhưng FFmpeg vẫn giải mã và
+    phát được video. Đây là cảnh báo nguồn, không phải lỗi làm dừng luồng.
+    """
+    low = (line or "").lower()
+    return "hevc" in low and bool(_HEVC_SOURCE_WARN_RE.search(low))
 
 
 def _note_progress(line: str, cam_id: str) -> bool:
@@ -2538,6 +2557,10 @@ def _camera_worker_loop(cam_id: str, token: threading.Event):
             if _is_audio_au_warning(line):
                 return ("Lỗi âm thanh RTSP (AU headers) — video vẫn chạy; nếu live vẫn lỗi, "
                         "đặt Âm thanh = Không trong cấu hình camera: " + line)
+            if _is_hevc_source_warning(line):
+                return ("Nguồn H.265 có tham số PPS/SPS/NAL không chuẩn (thường từ NVR/go2rtc) — "
+                        "video có thể vẫn phát bình thường; nếu hình không lên, dùng luồng phụ "
+                        "H.264 hoặc luồng H.264 từ NVR: " + line)
             if ("server returned 404" in low or "404 not found" in low) and _go2rtc.get("running"):
                 return ("Nguồn camera lỗi khi lấy qua restream go2rtc (sai URL/tài khoản hoặc cam đang bận): " + line)
             if "5xx" in low or "server returned 5" in low or "453" in low or "454" in low or "461" in low:
@@ -2554,6 +2577,7 @@ def _camera_worker_loop(cam_id: str, token: threading.Event):
         def _drain(p, cid, status):
             warned = False
             audio_warned = False
+            hevc_warned = False
             try:
                 for line in p.stderr:
                     line = line.strip()
@@ -2569,6 +2593,15 @@ def _camera_worker_loop(cam_id: str, token: threading.Event):
                         status["last_warning"] = _hint(line)
                         if not audio_warned:
                             audio_warned = True
+                            log_event("warn", status["last_warning"], cid)
+                        continue
+                    if _is_hevc_source_warning(line):
+                        # Nguồn có thể đã đổi codec trên cùng URL (NVR/go2rtc);
+                        # bỏ cache để lần khởi động sau dò lại thay vì copy nhầm.
+                        codec_cache.pop(cid, None)
+                        status["last_warning"] = _hint(line)
+                        if not hevc_warned:
+                            hevc_warned = True
                             log_event("warn", status["last_warning"], cid)
                         continue
                     status["last_error"] = _hint(line)
