@@ -22,11 +22,12 @@ RUN pip install --no-cache-dir \
     pydantic==2.14.1 \
     websocket-client==1.9.2 \
     smbprotocol==1.17.0 \
-    pyyaml==6.0.3
+    pyyaml==6.0.3 \
+    paho-mqtt==2.1.0
 
 COPY app/ /app/
 
-ARG LITENVR_VERSION=1.9.7
+ARG LITENVR_VERSION=1.9.8
 ENV LITENVR_VERSION=${LITENVR_VERSION}
 
 EXPOSE 8080 8556/tcp 8556/udp

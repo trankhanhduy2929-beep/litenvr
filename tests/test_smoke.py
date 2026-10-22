@@ -860,6 +860,46 @@ class ApiTests(_AppCase):
         self.assertTrue(self.m._safe_remote_url("http://10.0.0.5/x.jpg"))
         self.assertTrue(self.m._safe_remote_url("http://192.168.1.20/x.jpg"))
 
+    def test_hass_mqtt_settings_persist_and_mask_password(self):
+        body = {
+            "enabled": False,
+            "base_url": "",
+            "token": "",
+            "entities": {},
+            "mqtt": {
+                "enabled": False,
+                "host": "mqtt://192.168.1.10:1883",
+                "port": 1883,
+                "username": "mqtt-user",
+                "password": "secret",
+                "tls": False,
+                "discovery_prefix": "homeassistant",
+                "base_topic": "litenvr",
+                "snapshot_interval": 15,
+            },
+        }
+        self.assertEqual(self.client.post("/api/hass", json=body, headers=auth()).status_code, 200)
+        mq = self.client.get("/api/hass", headers=auth()).json()["mqtt"]
+        self.assertEqual(mq["host"], "192.168.1.10")
+        self.assertTrue(mq["has_password"])
+        self.assertNotIn("password", mq)
+
+        body["mqtt"]["password"] = ""
+        self.assertEqual(self.client.post("/api/hass", json=body, headers=auth()).status_code, 200)
+        self.assertEqual(self.m.CONFIG["mqtt"]["password"], "secret")
+
+        body["mqtt"]["enabled"] = True
+        body["mqtt"]["discovery_prefix"] = "bad/#"
+        self.assertEqual(self.client.post("/api/hass", json=body, headers=auth()).status_code, 400)
+        self.assertEqual(self.m.CONFIG["mqtt"]["discovery_prefix"], "homeassistant")
+
+        body["mqtt"]["enabled"] = False
+        body["mqtt"]["discovery_prefix"] = "homeassistant"
+        body["mqtt"]["host"] = ""
+        body["mqtt"]["username"] = ""
+        body["mqtt"]["password"] = ""
+        self.assertEqual(self.client.post("/api/hass", json=body, headers=auth()).status_code, 200)
+
     def test_drive_scan_skips_active_segment_and_queues_once(self):
         cam = "drivecam"
         self.client.post("/api/cameras", json={"cam_id": cam, "name": "Drive",
@@ -919,6 +959,92 @@ class ApiTests(_AppCase):
         self.assertFalse(os.path.exists(os.path.join(cam_dir, names["normal"])))
         for key in ("locked", "pending", "active"):
             self.assertTrue(os.path.exists(os.path.join(cam_dir, names[key])), key)
+
+class MqttUnitTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.sandbox, cls.m = load_app()
+
+    def test_discovery_payload_and_retained_cleanup(self):
+        m = self.m
+        saved_cameras = m.CONFIG.get("cameras", {})
+        saved_mqtt = m.CONFIG.get("mqtt", {})
+        m.CONFIG["cameras"] = {"cam-1": {"name": "Cổng trước"}}
+        m.CONFIG["mqtt"] = {"enabled": True, "discovery_prefix": "homeassistant",
+                            "base_topic": "litenvr"}
+        try:
+            topic, payload = m._mqtt_discovery_payload(
+                "cam-1", {"name": "Cổng trước"}, "cam_1", m.CONFIG["mqtt"])
+            self.assertEqual(topic, "homeassistant/camera/litenvr/cam_1/config")
+            self.assertEqual(payload["unique_id"], "litenvr_camera_cam_1")
+            self.assertEqual(payload["default_entity_id"], "camera.litenvr_cam_1")
+            self.assertEqual(payload["topic"], "litenvr/camera/cam_1/image")
+            self.assertEqual(payload["availability_topic"], "litenvr/status")
+            self.assertEqual(payload["device"]["identifiers"], ["litenvr"])
+
+            calls = []
+
+            class FakeClient:
+                def publish(self, topic, data, qos=0, retain=False):
+                    calls.append((topic, data, qos, retain))
+
+            old_topic = "homeassistant/camera/litenvr/old/config"
+            old_image = "litenvr/camera/old/image"
+            m._mqtt_save_known({"old": {"topic": old_topic, "image": old_image}})
+            self.assertTrue(m._mqtt_publish_discovery(FakeClient(), m.CONFIG["mqtt"]))
+            topics = [c[0] for c in calls]
+            self.assertIn(topic, topics)
+            self.assertIn(old_topic, topics)
+            self.assertIn(old_image, topics)
+            old_call = calls[topics.index(old_topic)]
+            self.assertEqual(old_call[1], "")
+            self.assertTrue(old_call[3])
+            old_image_call = calls[topics.index(old_image)]
+            self.assertEqual(old_image_call[1], "")
+            self.assertTrue(old_image_call[3])
+            self.assertEqual(set(m._mqtt_load_known()), {"cam_1"})
+        finally:
+            m.CONFIG["cameras"] = saved_cameras
+            m.CONFIG["mqtt"] = saved_mqtt
+
+    def test_snapshot_publish_deduplicates(self):
+        m = self.m
+        saved_cameras = m.CONFIG.get("cameras", {})
+        saved_mqtt = m.CONFIG.get("mqtt", {})
+        m.CONFIG["cameras"] = {"cam1": {"name": "Cam"}}
+        m.CONFIG["mqtt"] = {"enabled": True, "base_topic": "litenvr"}
+        path = os.path.join(m.MQTT_SNAPSHOT_DIR, "cam1.jpg")
+        with open(path, "wb") as f:
+            f.write(b"\xff\xd8\xff\xd9")
+        calls = []
+
+        class FakeClient:
+            def publish(self, topic, data, qos=0, retain=False):
+                calls.append((topic, data, qos, retain))
+                return type("Info", (), {"rc": 0})()
+
+        old_client = m._mqtt_client
+        old_connected = m.mqtt_state.get("connected")
+        m._mqtt_last_payload.clear()
+        try:
+            with m._mqtt_lock:
+                m._mqtt_client = FakeClient()
+            m.mqtt_state["connected"] = True
+            self.assertTrue(m._mqtt_publish_snapshot_path("cam1", path))
+            self.assertFalse(m._mqtt_publish_snapshot_path("cam1", path))
+            self.assertTrue(m._mqtt_publish_snapshot_path("cam1", path, force=True))
+            self.assertEqual(len(calls), 2)
+            self.assertEqual(calls[0][0], "litenvr/camera/cam1/image")
+            self.assertEqual(calls[0][1], b"\xff\xd8\xff\xd9")
+            self.assertTrue(calls[0][3])
+        finally:
+            with m._mqtt_lock:
+                m._mqtt_client = old_client
+            m.mqtt_state["connected"] = old_connected
+            m._mqtt_last_payload.clear()
+            m.CONFIG["cameras"] = saved_cameras
+            m.CONFIG["mqtt"] = saved_mqtt
+
 
 class _FakeOnvifHandler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):

@@ -3265,8 +3265,63 @@
       <div id="hassStatus" style="font-size:12px;color:var(--text-muted);margin:6px 0 12px;"></div>
       <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;">Gán cảm biến chuyển động cho từng camera trong form <b>Sửa camera</b> (mục 🎯 / 🛰️). Mọi thay đổi trạng thái của cảm biến đều kích hoạt ghi hình.</div>
 
-      <div style="display:flex; gap:8px; justify-content:space-between; margin-top:14px;">
-        <button class="warn" onclick="testHass()">Kiểm tra kết nối</button>
+      <div style="border-top:1px solid var(--border-subtle); margin:16px 0 12px; padding-top:14px;">
+        <label style="flex-direction:row; align-items:center; gap:8px; cursor:pointer; font-weight:600;">
+          <input type="checkbox" id="mqttEnabled" style="width:auto;">
+          MQTT Discovery (camera snapshot)
+        </label>
+        <div style="font-size:12px;color:var(--text-muted);margin:4px 0 10px;">Home Assistant tự tạo entity <b>camera.litenvr_&lt;camera&gt;</b> để gắn badge/card. Ảnh cập nhật định kỳ, không phải luồng live.</div>
+        <div class="grid-2">
+          <div class="form-row">
+            <label>MQTT host</label>
+            <input id="mqttHost" placeholder="core-mosquitto">
+          </div>
+          <div class="form-row">
+            <label>Cổng</label>
+            <input type="number" id="mqttPort" min="1" max="65535" placeholder="1883">
+          </div>
+        </div>
+        <div class="grid-2">
+          <div class="form-row">
+            <label>Tài khoản MQTT</label>
+            <input id="mqttUsername" placeholder="mqtt-user" autocomplete="username">
+          </div>
+          <div class="form-row">
+            <label>Mật khẩu MQTT</label>
+            <input type="password" id="mqttPassword" placeholder="Để trống = giữ mật khẩu cũ" autocomplete="current-password">
+          </div>
+        </div>
+        <div class="grid-2">
+          <div class="form-row">
+            <label>Discovery prefix</label>
+            <input id="mqttDiscoveryPrefix" placeholder="homeassistant">
+          </div>
+          <div class="form-row">
+            <label>Base topic</label>
+            <input id="mqttBaseTopic" placeholder="litenvr">
+          </div>
+        </div>
+        <div class="grid-2">
+          <div class="form-row">
+            <label>Chu kỳ ảnh (giây)</label>
+            <input type="number" id="mqttSnapshotInterval" min="5" max="300" placeholder="15">
+          </div>
+          <div class="form-row">
+            <label style="flex-direction:row; align-items:center; gap:8px; cursor:pointer; margin-top:22px;">
+              <input type="checkbox" id="mqttTls" style="width:auto;">
+              Dùng TLS
+            </label>
+          </div>
+        </div>
+        <div style="font-size:12px;color:var(--text-muted);margin:2px 0 4px;">Mosquitto add-on: dùng <b>core-mosquitto</b>, cổng <b>1883</b>. Nếu broker mở cổng trên HA thì điền IP HA. Cần tạo user MQTT trong HA trước.</div>
+        <div id="mqttStatus" style="font-size:12px;color:var(--text-muted);margin:4px 0 0;"></div>
+      </div>
+
+      <div style="display:flex; gap:8px; justify-content:space-between; margin-top:14px; flex-wrap:wrap;">
+        <div style="display:flex; gap:8px; flex-wrap:wrap;">
+          <button class="warn" onclick="testHass()">Kiểm tra HA</button>
+          <button class="warn" onclick="testMqtt()">Kiểm tra MQTT</button>
+        </div>
         <div style="display:flex; gap:8px;">
           <button onclick="closeHassModal()">Đóng</button>
           <button class="primary" onclick="saveHass()">Lưu</button>
@@ -5122,6 +5177,37 @@
       await loadTimeline();
     }
 
+    function mqttFormPayload() {
+      const num = (id, fallback) => {
+        const n = parseInt(document.getElementById(id).value, 10);
+        return Number.isFinite(n) ? n : fallback;
+      };
+      return {
+        enabled: document.getElementById("mqttEnabled").checked,
+        host: document.getElementById("mqttHost").value.trim(),
+        base_url: document.getElementById("hassUrl").value.trim(),
+        port: num("mqttPort", 1883),
+        username: document.getElementById("mqttUsername").value.trim(),
+        password: document.getElementById("mqttPassword").value,
+        tls: document.getElementById("mqttTls").checked,
+        discovery_prefix: document.getElementById("mqttDiscoveryPrefix").value.trim() || "homeassistant",
+        base_topic: document.getElementById("mqttBaseTopic").value.trim() || "litenvr",
+        snapshot_interval: num("mqttSnapshotInterval", 15)
+      };
+    }
+
+    function renderMqttStatus(mq) {
+      const el = document.getElementById("mqttStatus");
+      if (!el) return;
+      const st = (mq && mq.status) || {};
+      if (!mq || !mq.enabled) { el.textContent = "MQTT: Đang tắt."; return; }
+      if (st.connected) {
+        el.textContent = `✅ MQTT đã kết nối ${st.broker || ""}; đã gửi ${st.published || 0} camera.`;
+      } else {
+        el.textContent = "⏳ MQTT chưa kết nối" + (st.last_error ? ` (${st.last_error})` : "");
+      }
+    }
+
     async function openHassModal() {
       const res = await fetch("api/hass");
       const cfg = await res.json();
@@ -5135,6 +5221,19 @@
       if (!cfg.enabled) el.textContent = "Trạng thái: Đang tắt.";
       else if (st.connected) el.textContent = "✅ Đã kết nối HA, đang lắng nghe chuyển động." + (st.last_event ? ` Lần cuối: ${st.last_event}` : "");
       else el.textContent = "⏳ Chưa kết nối" + (st.last_error ? ` (${st.last_error})` : "");
+      const mq = cfg.mqtt || {};
+      document.getElementById("mqttEnabled").checked = !!mq.enabled;
+      document.getElementById("mqttHost").value = mq.host || "";
+      document.getElementById("mqttPort").value = mq.port || 1883;
+      document.getElementById("mqttUsername").value = mq.username || "";
+      const mp = document.getElementById("mqttPassword");
+      mp.value = "";
+      mp.placeholder = mq.has_password ? "Đã lưu (bỏ trống = giữ)" : "Mật khẩu MQTT";
+      document.getElementById("mqttTls").checked = !!mq.tls;
+      document.getElementById("mqttDiscoveryPrefix").value = mq.discovery_prefix || "homeassistant";
+      document.getElementById("mqttBaseTopic").value = mq.base_topic || "litenvr";
+      document.getElementById("mqttSnapshotInterval").value = mq.snapshot_interval || 15;
+      renderMqttStatus(mq);
       document.getElementById("hassModal").classList.add("open");
     }
     function closeHassModal() { document.getElementById("hassModal").classList.remove("open"); }
@@ -5171,7 +5270,8 @@
           enabled: document.getElementById("hassEnabled").checked,
           base_url: document.getElementById("hassUrl").value.trim(),
           token: document.getElementById("hassToken").value.trim(),
-          entities: {}
+          entities: {},
+          mqtt: mqttFormPayload()
         })
       });
       if (!r.ok) {
@@ -5180,6 +5280,22 @@
         return;
       }
       closeHassModal();
+    }
+
+    async function testMqtt() {
+      const el = document.getElementById("mqttStatus");
+      el.textContent = "Đang kiểm tra kết nối MQTT...";
+      try {
+        const res = await fetch("api/hass/mqtt/test", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify(mqttFormPayload())
+        });
+        const data = await res.json();
+        el.textContent = res.ok ? ("✅ " + (data.message || "Kết nối MQTT OK")) : ("❌ " + (data.detail || "Lỗi"));
+      } catch (e) {
+        el.textContent = "❌ " + e;
+      }
     }
 
     async function testHass() {

@@ -41,7 +41,7 @@ mimetypes.add_type("video/mp2t", ".ts")
 NVR_USER = os.environ.get("NVR_USER", "admin")
 NVR_PASS = os.environ.get("NVR_PASS", "admin")
 AUTH_ENABLED = os.environ.get("NVR_AUTH", "on").lower() not in ("off", "0", "false", "no")
-APP_VERSION = (os.environ.get("LITENVR_VERSION") or "1.9.7").strip() or "1.9.7"
+APP_VERSION = (os.environ.get("LITENVR_VERSION") or "1.9.8").strip() or "1.9.8"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 _STATIC_CAND = os.path.join(BASE_DIR, "static")
@@ -58,6 +58,8 @@ THUMBS_DIR = os.path.join(STORAGE_DIR, "thumbnails")
 LEGACY_THUMBS_DIR = os.path.join(BUFFER_DIR, "thumbs")
 THUMB_CACHE_MAX_MB = 256
 PLAYBACK_CACHE_DIR = os.path.join(STORAGE_DIR, "playback_cache")
+MQTT_SNAPSHOT_DIR = os.path.join(BUFFER_DIR, "mqtt")
+MQTT_DISCOVERY_FILE = os.path.join(STORAGE_DIR, "mqtt_discovery.json")
 PLAYBACK_CACHE_MB = max(64, int(os.environ.get("PLAYBACK_CACHE_MB", "2048") or "2048"))
 PLAYBACK_CACHE_TTL_SEC = max(300, int(os.environ.get("PLAYBACK_CACHE_TTL_SEC", "3600") or "3600"))
 PLAYBACK_TRANSCODE_MAX = max(1, min(4, int(os.environ.get("PLAYBACK_TRANSCODE_MAX", "2") or "2")))
@@ -76,7 +78,7 @@ DRIVE_TICK = float(os.environ.get("NVR_DRIVE_TICK", "20"))
 DRIVE_CHUNK = int(os.environ.get("NVR_DRIVE_CHUNK", str(16 * 1024 * 1024)))
 DRIVE_RETRY_BASE = float(os.environ.get("NVR_DRIVE_RETRY_BASE", "60"))
 
-for d in [RECORDINGS_DIR, SNAPSHOTS_DIR, HLS_DIR, BUFFER_DIR, THUMBS_DIR, PLAYBACK_CACHE_DIR]:
+for d in [RECORDINGS_DIR, SNAPSHOTS_DIR, HLS_DIR, BUFFER_DIR, THUMBS_DIR, PLAYBACK_CACHE_DIR, MQTT_SNAPSHOT_DIR]:
     os.makedirs(d, exist_ok=True)
 
 # ---- Giám sát tài nguyên (CPU / RAM / ổ đĩa) cho dashboard ----
@@ -241,6 +243,7 @@ async def lifespan(app: FastAPI):
     threading.Thread(target=drive_worker, daemon=True).start()
     threading.Thread(target=backup_worker, daemon=True).start()
     threading.Thread(target=hass_motion_listener, daemon=True).start()
+    threading.Thread(target=mqtt_worker, daemon=True).start()
     threading.Thread(target=stats_sampler, daemon=True).start()
     threading.Thread(target=live_supervisor, daemon=True).start()
     threading.Thread(target=stream_health_supervisor, daemon=True).start()
@@ -251,6 +254,7 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         _shutdown.set()
+        mqtt_shutdown()
         with worker_lock:
             camera_ids = list(set(worker_tokens) | set(ffmpeg_processes))
         for cam_id in camera_ids:
@@ -367,6 +371,17 @@ DEFAULT_CONFIG = {
         "token": "",          # Long-Lived Access Token của Home Assistant
         "entities": {}        # cam_id -> [entity_id cảm biến chuyển động, ...]
     },
+    "mqtt": {
+        "enabled": False,
+        "host": "",
+        "port": 1883,
+        "username": "",
+        "password": "",
+        "tls": False,
+        "discovery_prefix": "homeassistant",
+        "base_topic": "litenvr",
+        "snapshot_interval": 15
+    },
     "notify": {
         "telegram_enabled": False,
         "telegram_token": "",
@@ -417,6 +432,19 @@ def _normalize_config(cfg: dict) -> dict:
     ha = cfg.setdefault("homeassistant", {})
     for k, v in DEFAULT_CONFIG["homeassistant"].items():
         ha.setdefault(k, v)
+    mq = cfg.setdefault("mqtt", {})
+    for k, v in DEFAULT_CONFIG["mqtt"].items():
+        mq.setdefault(k, v)
+    try:
+        mq["port"] = max(1, min(65535, int(mq.get("port") or 1883)))
+    except (TypeError, ValueError):
+        mq["port"] = 1883
+    try:
+        mq["snapshot_interval"] = max(5, min(300, int(mq.get("snapshot_interval") or 15)))
+    except (TypeError, ValueError):
+        mq["snapshot_interval"] = 15
+    mq["enabled"] = bool(mq.get("enabled"))
+    mq["tls"] = bool(mq.get("tls"))
     nt = cfg.setdefault("notify", {})
     for k, v in DEFAULT_CONFIG["notify"].items():
         nt.setdefault(k, v)
@@ -4065,6 +4093,7 @@ def _capture_snapshot(cam_id: str, cam_info: dict, snap_path: str,
             conn.execute("UPDATE events SET snapshot=? WHERE id=?",
                          (os.path.basename(snap_path), event_id))
             conn.commit()
+        _mqtt_publish_snapshot_path(cam_id, snap_path)
     except subprocess.TimeoutExpired:
         log_event("warn", "Chụp snapshot quá thời gian, đã dừng ffmpeg", cam_id)
     except Exception as e:
@@ -4178,6 +4207,7 @@ def handle_motion(cam_id: str, label: str, snap_url: str = ""):
         _start_snapshot(cam_id, cam_info, snap_path, event_id)
     threading.Thread(target=notify_motion,
                      args=(cam_id, label, initial_path if initial_name else ""), daemon=True).start()
+    _mqtt_publish_snapshot_path(cam_id, initial_path if initial_name else "")
     return {
         "status": "ok",
         "timestamp": ts,
@@ -4211,11 +4241,24 @@ class HassRule(BaseModel):
     entity_id: str
     label: str = ""            # Nhãn sự kiện, VD: "Người quen", "Người lạ", tên người
 
+class MqttSettings(BaseModel):
+    enabled: bool = False
+    host: str = ""
+    base_url: str = ""
+    port: int = 1883
+    username: str = ""
+    password: str = ""
+    tls: bool = False
+    discovery_prefix: str = "homeassistant"
+    base_topic: str = "litenvr"
+    snapshot_interval: int = 15
+
 class HassSettings(BaseModel):
     enabled: bool = False
     base_url: str = ""
     token: str = ""            # Để trống khi lưu = giữ token cũ
     entities: Dict[str, List[HassRule]] = {}
+    mqtt: Optional[MqttSettings] = None
 
 def _hass_rules(entities: Dict[str, Any] = None) -> Dict[str, dict]:
     """Bảng tra entity_id -> {cam_id, state, label}. Gộp cảm biến gán riêng cho camera
@@ -4385,23 +4428,77 @@ def get_hass_settings():
     for eid, info in watch.items():
         rules.setdefault(info["cam_id"], []).append({
             "entity_id": eid, "state": info.get("state", ""), "label": info.get("label", "")})
+    mq = CONFIG.get("mqtt", {}) or {}
     return {
         "enabled": bool(ha.get("enabled")),
         "base_url": ha.get("base_url", ""),
         "has_token": bool((ha.get("token") or "").strip()),
         "entities": rules,
         "status": hass_state,
+        "mqtt": {
+            "enabled": bool(mq.get("enabled")),
+            "host": mq.get("host", ""),
+            "port": int(mq.get("port") or 1883),
+            "username": mq.get("username", ""),
+            "has_password": bool((mq.get("password") or "").strip()),
+            "tls": bool(mq.get("tls")),
+            "discovery_prefix": mq.get("discovery_prefix") or "homeassistant",
+            "base_topic": mq.get("base_topic") or "litenvr",
+            "snapshot_interval": int(mq.get("snapshot_interval") or 15),
+            "status": dict(mqtt_state),
+        },
     }
 
 @app.post("/api/hass")
 def update_hass_settings(settings: HassSettings):
+    base_url = settings.base_url.strip()
+    mqtt_data = None
+    if settings.mqtt is not None:
+        data = settings.mqtt
+        try:
+            discovery_prefix = _mqtt_clean_topic(data.discovery_prefix, "homeassistant")
+            base_topic = _mqtt_clean_topic(data.base_topic, "litenvr")
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        if not 1 <= int(data.port) <= 65535:
+            raise HTTPException(status_code=400, detail="Cổng MQTT không hợp lệ (1-65535)")
+        host = _mqtt_normalize_host(data.host)
+        effective_host = host or _mqtt_effective_host({"host": "", "base_url": base_url})
+        if data.enabled and not effective_host:
+            raise HTTPException(status_code=400,
+                                detail="Chưa có host MQTT (core-mosquitto hoặc IP Home Assistant)")
+        mqtt_data = {
+            "enabled": bool(data.enabled),
+            "host": host,
+            "port": int(data.port),
+            "username": data.username.strip(),
+            "password": data.password,
+            "tls": bool(data.tls),
+            "discovery_prefix": discovery_prefix,
+            "base_topic": base_topic,
+            "snapshot_interval": max(5, min(300, int(data.snapshot_interval or 15))),
+        }
     ha = CONFIG.setdefault("homeassistant", {})
     ha["enabled"] = settings.enabled
-    ha["base_url"] = settings.base_url.strip()
+    ha["base_url"] = base_url
     if settings.token.strip():
         ha["token"] = settings.token.strip()
     # Cảm biến nay gán riêng theo từng camera (xem `hass_entities`), không ghi đè ở đây.
+    if mqtt_data is not None:
+        mq = CONFIG.setdefault("mqtt", {})
+        mq["enabled"] = mqtt_data["enabled"]
+        mq["host"] = mqtt_data["host"]
+        mq["port"] = mqtt_data["port"]
+        mq["username"] = mqtt_data["username"]
+        if mqtt_data["password"]:
+            mq["password"] = mqtt_data["password"]
+        mq["tls"] = mqtt_data["tls"]
+        mq["discovery_prefix"] = mqtt_data["discovery_prefix"]
+        mq["base_topic"] = mqtt_data["base_topic"]
+        mq["snapshot_interval"] = mqtt_data["snapshot_interval"]
+        mqtt_state["enabled"] = bool(mq["enabled"])
     save_config(CONFIG)
+    _mqtt_wake.set()
     return {"status": "ok"}
 
 @app.post("/api/hass/entities")
@@ -4457,6 +4554,536 @@ def test_hass_connection(settings: HassSettings):
         raise HTTPException(status_code=400, detail=f"HA trả về lỗi HTTP {e.code} (sai token?)")
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Không kết nối được HA: {e}")
+
+
+mqtt_state = {
+    "enabled": False,
+    "connected": False,
+    "broker": "",
+    "published": 0,
+    "last_connect": 0,
+    "last_publish": 0,
+    "last_error": "",
+    "connect_since": 0,
+}
+_mqtt_lock = threading.Lock()
+_mqtt_known_lock = threading.Lock()
+_mqtt_wake = threading.Event()
+_mqtt_client = None
+_mqtt_client_sig = None
+_mqtt_camera_sig = None
+_mqtt_last_payload: Dict[str, bytes] = {}
+_mqtt_last_shot: Dict[str, float] = {}
+
+
+def _mqtt_lib():
+    try:
+        from paho.mqtt import client as mqtt_lib
+    except Exception as e:
+        raise RuntimeError("Thiếu thư viện paho-mqtt trong image LiteNVR") from e
+    return mqtt_lib
+
+
+def _mqtt_cfg() -> dict:
+    return CONFIG.get("mqtt", {}) or {}
+
+
+def _mqtt_normalize_host(value: str) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    if raw.startswith("[") and "]" in raw:
+        return raw[1:raw.index("]")].strip()
+    if "://" in raw:
+        try:
+            return (urllib.parse.urlsplit(raw).hostname or "").strip()
+        except Exception:
+            return ""
+    if raw.count(":") == 1:
+        host, port = raw.rsplit(":", 1)
+        if port.isdigit():
+            raw = host
+    return raw.strip().strip("[]")
+
+
+def _mqtt_effective_host(cfg: dict = None) -> str:
+    cfg = cfg if isinstance(cfg, dict) else _mqtt_cfg()
+    host = _mqtt_normalize_host(cfg.get("host") or "")
+    if host:
+        return host
+    base_url = str(cfg.get("base_url") or "").strip()
+    if not base_url:
+        base_url = str((CONFIG.get("homeassistant") or {}).get("base_url") or "").strip()
+    if not base_url:
+        return ""
+    try:
+        return (urllib.parse.urlsplit(base_url).hostname or "").strip()
+    except Exception:
+        return ""
+
+
+def _mqtt_clean_topic(value: str, default: str) -> str:
+    topic = str(value or "").strip().strip("/")
+    if not topic:
+        return default
+    if any(ch in topic for ch in "+#") or any(ch.isspace() for ch in topic) or "//" in topic:
+        raise ValueError("MQTT topic không hợp lệ (không dùng +, #, khoảng trắng hoặc //)")
+    return topic
+
+
+def _mqtt_topics(cfg: dict = None) -> tuple:
+    cfg = cfg if isinstance(cfg, dict) else _mqtt_cfg()
+    try:
+        prefix = _mqtt_clean_topic(cfg.get("discovery_prefix"), "homeassistant")
+    except ValueError:
+        prefix = "homeassistant"
+    try:
+        base = _mqtt_clean_topic(cfg.get("base_topic"), "litenvr")
+    except ValueError:
+        base = "litenvr"
+    return prefix, base
+
+
+def _mqtt_slug(cam_id: str) -> str:
+    text = unicodedata.normalize("NFKD", str(cam_id or "")).encode("ascii", "ignore").decode("ascii")
+    slug = re.sub(r"[^a-z0-9]+", "_", text.lower()).strip("_")
+    return slug or "cam"
+
+
+def _mqtt_camera_slugs() -> Dict[str, str]:
+    out: Dict[str, str] = {}
+    used = set()
+    for cam_id in sorted((CONFIG.get("cameras") or {}).keys()):
+        slug = _mqtt_slug(cam_id)
+        if slug in used:
+            slug = f"{slug}_{hashlib.sha1(str(cam_id).encode()).hexdigest()[:6]}"
+        used.add(slug)
+        out[cam_id] = slug
+    return out
+
+
+def _mqtt_camera_signature(cfg: dict = None) -> tuple:
+    prefix, base = _mqtt_topics(cfg)
+    cameras = CONFIG.get("cameras") or {}
+    items = []
+    for cam_id in sorted(cameras.keys()):
+        cam = cameras.get(cam_id) or {}
+        items.append((str(cam_id), str(cam.get("name") or cam_id)))
+    return prefix, base, tuple(items)
+
+
+def _mqtt_load_known() -> Dict[str, dict]:
+    try:
+        with _mqtt_known_lock:
+            with open(MQTT_DISCOVERY_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+    except Exception:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    out = {}
+    for key, item in data.items():
+        if isinstance(item, dict) and isinstance(item.get("topic"), str):
+            out[str(key)] = item
+    return out
+
+
+def _mqtt_save_known(data: Dict[str, dict]):
+    try:
+        tmp = MQTT_DISCOVERY_FILE + ".tmp"
+        with _mqtt_known_lock:
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+            os.replace(tmp, MQTT_DISCOVERY_FILE)
+    except Exception as e:
+        log_event("warn", f"Không lưu được danh sách MQTT discovery: {mask_secrets(str(e))}")
+
+
+def _mqtt_discovery_payload(cam_id: str, cam: dict, slug: str, cfg: dict = None) -> tuple:
+    _, base = _mqtt_topics(cfg)
+    image_topic = f"{base}/camera/{slug}/image"
+    name = str((cam or {}).get("name") or cam_id)
+    payload = {
+        "name": name,
+        "unique_id": f"litenvr_camera_{slug}",
+        "default_entity_id": f"camera.litenvr_{slug}",
+        "topic": image_topic,
+        "availability_topic": f"{base}/status",
+        "payload_available": "online",
+        "payload_not_available": "offline",
+        "device": {
+            "identifiers": ["litenvr"],
+            "name": "LiteNVR",
+            "manufacturer": "LiteNVR",
+            "model": "LiteNVR NVR",
+            "sw_version": APP_VERSION,
+        },
+        "origin": {
+            "name": "LiteNVR",
+            "sw_version": APP_VERSION,
+            "support_url": "https://github.com/trankhanhduy2929-beep/litenvr_docker_zimaos",
+        },
+    }
+    prefix, _ = _mqtt_topics(cfg)
+    topic = f"{prefix}/camera/litenvr/{slug}/config"
+    return topic, payload
+
+
+def _mqtt_clear_discovery(client, wait: bool = False):
+    known = _mqtt_load_known()
+    if not known:
+        return True
+    ok = True
+    infos = []
+    for item in known.values():
+        for topic in (item.get("topic", ""), item.get("image", "")):
+            if not topic:
+                continue
+            try:
+                info = client.publish(topic, "", qos=0, retain=True)
+                infos.append(info)
+                if getattr(info, "rc", 0) != 0:
+                    ok = False
+            except Exception:
+                ok = False
+    if wait:
+        for info in infos:
+            try:
+                waiter = getattr(info, "wait_for_publish", None)
+                if waiter:
+                    waiter(timeout=1)
+            except Exception:
+                pass
+    if ok:
+        _mqtt_save_known({})
+    return ok
+
+
+def _mqtt_publish_discovery(client, cfg: dict = None) -> bool:
+    if client is None:
+        return False
+    cfg = cfg if isinstance(cfg, dict) else _mqtt_cfg()
+    current = {}
+    ok = True
+    _, base = _mqtt_topics(cfg)
+    cameras = CONFIG.get("cameras") or {}
+    slugs = _mqtt_camera_slugs()
+    for cam_id, slug in slugs.items():
+        topic, payload = _mqtt_discovery_payload(cam_id, cameras.get(cam_id) or {}, slug, cfg)
+        try:
+            info = client.publish(topic, json.dumps(payload, ensure_ascii=False), qos=0, retain=True)
+            if getattr(info, "rc", 0) != 0:
+                ok = False
+        except Exception as e:
+            ok = False
+            mqtt_state["last_error"] = mask_secrets(str(e))
+        current[slug] = {"topic": topic, "image": f"{base}/camera/{slug}/image"}
+    known = _mqtt_load_known()
+    for slug, item in known.items():
+        if slug in current:
+            continue
+        for topic in (item.get("topic", ""), item.get("image", "")):
+            if not topic:
+                continue
+            try:
+                info = client.publish(topic, "", qos=0, retain=True)
+                if getattr(info, "rc", 0) != 0:
+                    ok = False
+            except Exception:
+                ok = False
+    if ok:
+        _mqtt_save_known(current)
+    if ok:
+        mqtt_state["published"] = len(current)
+    mqtt_state["last_publish"] = int(time.time())
+    return ok
+
+
+def _mqtt_publish_snapshot_path(cam_id: str, path: str = "", force: bool = False) -> bool:
+    cfg = _mqtt_cfg()
+    if not cfg.get("enabled") or not mqtt_state.get("connected"):
+        return False
+    slug = _mqtt_camera_slugs().get(cam_id)
+    if not slug:
+        return False
+    if not path:
+        path = _latest_snapshot(cam_id)
+    if not _valid_snapshot(path):
+        return False
+    try:
+        if os.path.getsize(path) > 8 * 1024 * 1024:
+            return False
+        with open(path, "rb") as f:
+            data = f.read()
+    except OSError:
+        return False
+    if not force and _mqtt_last_payload.get(cam_id) == data:
+        return False
+    with _mqtt_lock:
+        client = _mqtt_client
+    if client is None:
+        return False
+    _, base = _mqtt_topics(cfg)
+    try:
+        info = client.publish(f"{base}/camera/{slug}/image", data, qos=0, retain=True)
+        if getattr(info, "rc", 0) != 0:
+            return False
+    except Exception as e:
+        mqtt_state["last_error"] = mask_secrets(str(e))
+        return False
+    _mqtt_last_payload[cam_id] = data
+    mqtt_state["last_publish"] = int(time.time())
+    return True
+
+
+def _mqtt_publish_periodic(cfg: dict = None):
+    cfg = cfg if isinstance(cfg, dict) else _mqtt_cfg()
+    try:
+        interval = max(5, min(300, int(cfg.get("snapshot_interval") or 15)))
+    except (TypeError, ValueError):
+        interval = 15
+    now = time.time()
+    cameras = CONFIG.get("cameras") or {}
+    for cam_id in list(cameras.keys()):
+        if _shutdown.is_set() or not mqtt_state.get("connected"):
+            return
+        if now - _mqtt_last_shot.get(cam_id, 0) < interval:
+            continue
+        _mqtt_last_shot[cam_id] = now
+        slug = _mqtt_camera_slugs().get(cam_id, _mqtt_slug(cam_id))
+        path = os.path.join(MQTT_SNAPSHOT_DIR, f"{slug}.jpg")
+        try:
+            if _go2rtc_snapshot(cam_id, path):
+                _mqtt_publish_snapshot_path(cam_id, path)
+                continue
+        except Exception as e:
+            mqtt_state["last_error"] = mask_secrets(str(e))
+        latest = _latest_snapshot(cam_id)
+        if latest:
+            _mqtt_publish_snapshot_path(cam_id, latest)
+
+
+def _mqtt_new_client(cfg: dict, client_id: str, will: bool = False):
+    mqtt_lib = _mqtt_lib()
+    try:
+        client = mqtt_lib.Client(mqtt_lib.CallbackAPIVersion.VERSION2, client_id=client_id)
+    except (AttributeError, TypeError):
+        client = mqtt_lib.Client(client_id=client_id)
+    username = str(cfg.get("username") or "")
+    password = str(cfg.get("password") or "")
+    if username or password:
+        client.username_pw_set(username or "litenvr", password or None)
+    if cfg.get("tls"):
+        client.tls_set()
+    if will:
+        _, base = _mqtt_topics(cfg)
+        client.will_set(f"{base}/status", "offline", qos=0, retain=True)
+    client.reconnect_delay_set(min_delay=2, max_delay=30)
+    return client
+
+
+def _mqtt_install_callbacks(client, cfg: dict):
+    def on_connect(c, userdata, flags, reason_code, properties=None):
+        global _mqtt_camera_sig
+        code = int(getattr(reason_code, "value", reason_code))
+        if code == 0:
+            _, base = _mqtt_topics(cfg)
+            mqtt_state.update(connected=True, last_connect=int(time.time()),
+                              last_error="", connect_since=0)
+            _mqtt_last_payload.clear()
+            _mqtt_last_shot.clear()
+            try:
+                c.publish(f"{base}/status", "online", qos=0, retain=True)
+            except Exception:
+                pass
+            if _mqtt_publish_discovery(c, cfg):
+                _mqtt_camera_sig = _mqtt_camera_signature(cfg)
+        else:
+            mqtt_state.update(connected=False, last_error=f"MQTT từ chối kết nối (mã {code})")
+
+    def on_disconnect(c, userdata, *args):
+        mqtt_state["connected"] = False
+        if not _shutdown.is_set():
+            mqtt_state["last_error"] = "Mất kết nối MQTT; đang thử lại"
+
+    client.on_connect = on_connect
+    client.on_disconnect = on_disconnect
+
+
+def _mqtt_disconnect(clear: bool = False):
+    global _mqtt_client, _mqtt_client_sig, _mqtt_camera_sig
+    with _mqtt_lock:
+        client = _mqtt_client
+        _mqtt_client = None
+    _mqtt_client_sig = None
+    _mqtt_camera_sig = None
+    if client is None:
+        mqtt_state["connected"] = False
+        mqtt_state["connect_since"] = 0
+        return
+    if clear and mqtt_state.get("connected"):
+        try:
+            _mqtt_clear_discovery(client, wait=True)
+        except Exception:
+            pass
+    _, base = _mqtt_topics()
+    try:
+        info = client.publish(f"{base}/status", "offline", qos=0, retain=True)
+        waiter = getattr(info, "wait_for_publish", None)
+        if waiter:
+            waiter(timeout=1)
+    except Exception:
+        pass
+    try:
+        client.disconnect()
+    except Exception:
+        pass
+    try:
+        client.loop_stop()
+    except Exception:
+        pass
+    mqtt_state["connected"] = False
+    mqtt_state["connect_since"] = 0
+
+
+def mqtt_shutdown():
+    _mqtt_wake.set()
+    _mqtt_disconnect(clear=False)
+
+
+def mqtt_worker():
+    global _mqtt_client, _mqtt_client_sig, _mqtt_camera_sig
+    try:
+        _mqtt_lib()
+    except RuntimeError as e:
+        mqtt_state["last_error"] = str(e)
+        print(f"[LiteNVR] {e}", flush=True)
+        return
+    while not _shutdown.is_set():
+        cfg = dict(_mqtt_cfg())
+        enabled = bool(cfg.get("enabled"))
+        mqtt_state["enabled"] = enabled
+        host = _mqtt_effective_host(cfg)
+        if not enabled or not host:
+            if _mqtt_client is not None:
+                _mqtt_disconnect(clear=True)
+            mqtt_state["connected"] = False
+            mqtt_state["connect_since"] = 0
+            mqtt_state["last_error"] = "" if not enabled else "Chưa có host MQTT (core-mosquitto hoặc IP HA)"
+            _mqtt_wake.wait(5)
+            _mqtt_wake.clear()
+            continue
+        try:
+            port = int(cfg.get("port") or 1883)
+        except (TypeError, ValueError):
+            port = 1883
+        prefix, base = _mqtt_topics(cfg)
+        signature = (
+            host,
+            port,
+            str(cfg.get("username") or ""),
+            str(cfg.get("password") or ""),
+            bool(cfg.get("tls")),
+            prefix,
+            base,
+        )
+        if _mqtt_client is None or _mqtt_client_sig != signature:
+            if _mqtt_client is not None:
+                _mqtt_disconnect(clear=bool(mqtt_state.get("connected")))
+            try:
+                client = _mqtt_new_client(cfg, f"litenvr-{uuid.uuid4().hex[:10]}", will=True)
+                _mqtt_install_callbacks(client, cfg)
+                with _mqtt_lock:
+                    _mqtt_client = client
+                _mqtt_client_sig = signature
+                _mqtt_camera_sig = None
+                mqtt_state["broker"] = f"{host}:{port}"
+                mqtt_state["connect_since"] = time.time()
+                client.connect_async(host, port, keepalive=60)
+                client.loop_start()
+            except Exception as e:
+                mqtt_state["connected"] = False
+                mqtt_state["last_error"] = mask_secrets(str(e))
+                _mqtt_disconnect(clear=False)
+                _mqtt_wake.wait(10)
+                _mqtt_wake.clear()
+                continue
+        if not mqtt_state.get("connected") and not mqtt_state.get("last_error"):
+            since = float(mqtt_state.get("connect_since") or 0)
+            if since and time.time() - since > 10:
+                mqtt_state["last_error"] = f"Chưa kết nối được {host}:{port}"
+        if mqtt_state.get("connected") and _mqtt_client is not None:
+            camera_sig = _mqtt_camera_signature(cfg)
+            if _mqtt_camera_sig != camera_sig:
+                if _mqtt_publish_discovery(_mqtt_client, cfg):
+                    _mqtt_camera_sig = camera_sig
+            _mqtt_publish_periodic(cfg)
+        _mqtt_wake.wait(1)
+        _mqtt_wake.clear()
+
+
+def _mqtt_test_connection(cfg: dict) -> dict:
+    host = _mqtt_effective_host(cfg)
+    if not host:
+        raise RuntimeError("Chưa có host MQTT")
+    try:
+        port = int(cfg.get("port") or 1883)
+    except (TypeError, ValueError):
+        port = 1883
+    _, base = _mqtt_topics(cfg)
+    client = _mqtt_new_client(cfg, f"litenvr-test-{uuid.uuid4().hex[:8]}")
+    connected = threading.Event()
+    errors = []
+
+    def on_connect(c, userdata, flags, reason_code, properties=None):
+        code = int(getattr(reason_code, "value", reason_code))
+        if code == 0:
+            connected.set()
+        else:
+            errors.append(f"Broker từ chối kết nối (mã {code})")
+            connected.set()
+
+    client.on_connect = on_connect
+    try:
+        client.connect(host, port, keepalive=15)
+        client.loop_start()
+        if not connected.wait(6):
+            raise RuntimeError(f"Không kết nối được {host}:{port}")
+        if errors:
+            raise RuntimeError(errors[0])
+        client.publish(f"{base}/test", "LiteNVR MQTT OK", qos=0, retain=False)
+        return {"host": host, "port": port}
+    finally:
+        try:
+            client.disconnect()
+        except Exception:
+            pass
+        try:
+            client.loop_stop()
+        except Exception:
+            pass
+
+
+@app.post("/api/hass/mqtt/test")
+def test_mqtt_connection(settings: MqttSettings):
+    current = _mqtt_cfg()
+    cfg = dict(current)
+    cfg.update({
+        "host": settings.host,
+        "base_url": settings.base_url,
+        "port": settings.port,
+        "username": settings.username,
+        "password": settings.password or current.get("password", ""),
+        "tls": settings.tls,
+        "discovery_prefix": settings.discovery_prefix,
+        "base_topic": settings.base_topic,
+        "snapshot_interval": settings.snapshot_interval,
+    })
+    try:
+        info = _mqtt_test_connection(cfg)
+        return {"status": "ok", "message": f"Đã kết nối MQTT {info['host']}:{info['port']}"}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Không kết nối được MQTT: {mask_secrets(str(e))}")
 
 @app.get("/api/timeline/{cam_id}")
 def get_timeline(cam_id: str, date: str, source: str = "auto"):
