@@ -648,6 +648,192 @@ class ApiTests(_AppCase):
             cfg["cameras"].pop("camLong", None); cfg["cameras"].pop("camTiny", None)
 
 
+    def test_permission_paths_for_events_and_playback_users(self):
+        cam = "permcam"
+        self.client.post("/api/cameras", json={"cam_id": cam, "name": "Perm",
+                                               "rtsp_url": "rtsp://127.0.0.1:1/x"}, headers=auth())
+        users = {
+            "eventsonly": {"live": False, "playback": False, "events": True, "export": False, "ptz": False, "lock": False},
+            "playonly": {"live": False, "playback": True, "events": False, "export": False, "ptz": False, "lock": False},
+            "liveonly": {"live": True, "playback": False, "events": False, "export": False, "ptz": False, "lock": False},
+        }
+        for name, perms in users.items():
+            r = self.client.post("/api/users", json={"username": name, "password": "secret1",
+                                                     "role": "user", "perms": perms,
+                                                     "cameras": [cam]}, headers=auth())
+            self.assertEqual(r.status_code, 200)
+        snap_dir = self.m.SNAPSHOTS_DIR
+        os.makedirs(snap_dir, exist_ok=True)
+        with open(os.path.join(snap_dir, cam + "_event.jpg"), "wb") as f:
+            f.write(b"\xff\xd8\xff\xd9")
+        ev = auth("eventsonly", "secret1")
+        self.assertEqual(self.client.get("/api/cameras", headers=ev).status_code, 200)
+        self.assertEqual(self.client.get("/api/events", headers=ev).status_code, 200)
+        self.assertEqual(self.client.get(f"/api/timeline/{cam}?date=2020-01-01", headers=ev).status_code, 403)
+        self.assertEqual(self.client.post(f"/api/live/{cam}", headers=ev).status_code, 403)
+        self.assertEqual(self.client.get(f"/snapshots/{cam}_event.jpg", headers=ev).status_code, 200)
+        po = auth("playonly", "secret1")
+        self.assertEqual(self.client.get("/api/cameras", headers=po).status_code, 200)
+        self.assertEqual(self.client.get("/api/events", headers=po).status_code, 200)
+        self.assertEqual(self.client.get(f"/api/timeline/{cam}?date=2020-01-01", headers=po).status_code, 200)
+        self.assertEqual(self.client.post(f"/api/live/{cam}", headers=po).status_code, 403)
+        self.assertEqual(self.client.get(f"/snapshots/{cam}_event.jpg", headers=po).status_code, 200)
+        lo = auth("liveonly", "secret1")
+        self.assertEqual(self.client.get(f"/snapshots/{cam}_event.jpg", headers=lo).status_code, 200)
+        self.client.post(f"/api/live/{cam}", headers=lo)
+
+    def test_snapshot_permission_maps_filename_to_camera(self):
+        for cam in ("snapa", "snapb"):
+            self.client.post("/api/cameras", json={"cam_id": cam, "name": cam,
+                                                   "rtsp_url": "rtsp://127.0.0.1:1/x"}, headers=auth())
+        self.client.post("/api/users", json={"username": "snapuser", "password": "secret1",
+                                             "role": "user",
+                                             "perms": {"live": True, "playback": False, "events": False,
+                                                       "export": False, "ptz": False, "lock": False},
+                                             "cameras": ["snapa"]}, headers=auth())
+        os.makedirs(self.m.SNAPSHOTS_DIR, exist_ok=True)
+        for cam in ("snapa", "snapb"):
+            with open(os.path.join(self.m.SNAPSHOTS_DIR, cam + "_x.jpg"), "wb") as f:
+                f.write(b"\xff\xd8\xff\xd9")
+        u = auth("snapuser", "secret1")
+        self.assertEqual(self.client.get("/snapshots/snapa_x.jpg", headers=u).status_code, 200)
+        self.assertEqual(self.client.get("/snapshots/snapb_x.jpg", headers=u).status_code, 403)
+
+    def test_motion_ai_camera_scope(self):
+        for cam in ("motiona", "motionb"):
+            self.client.post("/api/cameras", json={"cam_id": cam, "name": cam,
+                                                   "rtsp_url": "rtsp://127.0.0.1:1/x"}, headers=auth())
+        self.client.post("/api/users", json={"username": "motionuser", "password": "secret1",
+                                             "role": "user",
+                                             "perms": {"live": True, "playback": False, "events": False,
+                                                       "export": False, "ptz": False, "lock": False},
+                                             "cameras": ["motiona"]}, headers=auth())
+        u = auth("motionuser", "secret1")
+        self.assertEqual(self.client.post("/api/motion", json={"cam_id": "motiona"},
+                                          headers=u).status_code, 200)
+        self.assertEqual(self.client.post("/api/motion", json={"cam_id": "motionb"},
+                                          headers=u).status_code, 403)
+        self.assertEqual(self.client.post("/api/ai/detect", json={"cam_id": "motionb", "objects": ["person"]},
+                                          headers=u).status_code, 403)
+
+    def test_camera_id_rejects_traversal_and_markup(self):
+        for bad in ("../evil", "a/b", "a\\b", "a'b", 'a"b', "a<b", "a`b"):
+            r = self.client.post("/api/cameras", json={"cam_id": bad, "name": "Bad",
+                                                       "rtsp_url": "rtsp://127.0.0.1:1/x"}, headers=auth())
+            self.assertEqual(r.status_code, 400, bad)
+        r = self.client.post("/api/cameras", json={"cam_id": "cam sân", "name": "Sân",
+                                                   "rtsp_url": "rtsp://127.0.0.1:1/x"}, headers=auth())
+        self.assertEqual(r.status_code, 200)
+        self.client.delete("/api/cameras/cam%20s%C3%A2n", headers=auth())
+
+    def test_csrf_header_and_origin(self):
+        from fastapi.testclient import TestClient
+        token = self.m.create_session("user1", "testclient")
+        c = TestClient(self.m.app)
+        try:
+            c.cookies.set(self.m.SESSION_COOKIE, token)
+            r = c.post("/api/storage/clean")
+            self.assertEqual(r.status_code, 403)
+            r = c.post("/api/storage/clean", headers={"Origin": "http://evil.test"})
+            self.assertEqual(r.status_code, 403)
+            r = c.post("/api/storage/clean", headers={"Origin": "http://testserver"})
+            self.assertEqual(r.status_code, 200)
+            r = c.post("/api/storage/clean", headers={"X-NVR-CSRF": "1"})
+            self.assertEqual(r.status_code, 200)
+        finally:
+            c.close()
+
+    def test_basic_auth_blocked_for_totp_account(self):
+        from fastapi.testclient import TestClient
+        username, password, secret = "tfa1", "secret1", "JBSWY3DPEHPK3PXP"
+        r = self.client.post("/api/users", json={"username": username, "password": password,
+                                                 "role": "user", "perms": {}, "cameras": []},
+                             headers=auth())
+        self.assertEqual(r.status_code, 200)
+        conn = self.m.db_conn()
+        conn.execute("UPDATE users SET totp_secret=?, totp_enabled=1 WHERE username=?",
+                     (secret, username))
+        conn.commit()
+        c = TestClient(self.m.app)
+        try:
+            self.assertEqual(c.get("/api/system", headers=auth(username, password)).status_code, 401)
+            r = c.post("/api/login", json={"username": username, "password": password})
+            self.assertEqual(r.status_code, 401)
+            self.assertTrue(r.json().get("otp_required"))
+            r = c.post("/api/login", json={"username": username, "password": password,
+                                           "otp": self.m.totp_code(secret)})
+            self.assertEqual(r.status_code, 200)
+        finally:
+            c.close()
+        self.client.delete("/api/users/" + username, headers=auth())
+
+    def test_safe_remote_url_blocks_internal_targets(self):
+        self.assertFalse(self.m._safe_remote_url("http://127.0.0.1/x.jpg"))
+        self.assertFalse(self.m._safe_remote_url("http://169.254.169.254/latest/meta-data"))
+        self.assertFalse(self.m._safe_remote_url("http://[::1]/x.jpg"))
+        self.assertTrue(self.m._safe_remote_url("http://10.0.0.5/x.jpg"))
+        self.assertTrue(self.m._safe_remote_url("http://192.168.1.20/x.jpg"))
+
+    def test_drive_scan_skips_active_segment_and_queues_once(self):
+        cam = "drivecam"
+        self.client.post("/api/cameras", json={"cam_id": cam, "name": "Drive",
+                                               "rtsp_url": "rtsp://127.0.0.1:1/x"}, headers=auth())
+        cam_dir = os.path.join(self.m.RECORDINGS_DIR, cam)
+        os.makedirs(cam_dir, exist_ok=True)
+        now = time.time()
+        old = time.strftime("%Y-%m-%d_%H-%M-%S", time.localtime(now - 120)) + ".mp4"
+        fresh = time.strftime("%Y-%m-%d_%H-%M-%S", time.localtime(now)) + ".mp4"
+        for name, mtime in ((old, now - 120), (fresh, now)):
+            fp = os.path.join(cam_dir, name)
+            with open(fp, "wb") as f:
+                f.write(b"x")
+            os.utime(fp, (mtime, mtime))
+        self.m.CONFIG.setdefault("gdrive", {})["since_ts"] = 0
+        with mock.patch.object(self.m, "cam_uploads_drive", return_value=True):
+            self.assertGreaterEqual(self.m.drive_scan_once(), 1)
+            self.assertEqual(self.m.drive_scan_once(), 0)
+        conn = self.m.db_conn()
+        self.assertIsNotNone(conn.execute("SELECT 1 FROM drive_uploads WHERE path=?",
+                                          (f"{cam}/{old}",)).fetchone())
+        self.assertIsNone(conn.execute("SELECT 1 FROM drive_uploads WHERE path=?",
+                                       (f"{cam}/{fresh}",)).fetchone())
+
+    def test_cleanup_keeps_locked_pending_and_active_files(self):
+        cam = "cleancam"
+        self.client.post("/api/cameras", json={"cam_id": cam, "name": "Clean",
+                                               "rtsp_url": "rtsp://127.0.0.1:1/x"}, headers=auth())
+        cam_dir = os.path.join(self.m.RECORDINGS_DIR, cam)
+        os.makedirs(cam_dir, exist_ok=True)
+        now = time.time()
+        old_ts = now - 3 * 86400
+        names = {"normal": "normal.mp4", "locked": "locked.mp4",
+                 "pending": "pending.mp4", "active": "active.mp4"}
+        for key, name in names.items():
+            fp = os.path.join(cam_dir, name)
+            with open(fp, "wb") as f:
+                f.write(b"x")
+            os.utime(fp, ((old_ts if key != "active" else now), (old_ts if key != "active" else now)))
+        self.assertTrue(self.m.lock_recording(cam, names["locked"], "test"))
+        conn = self.m.db_conn()
+        conn.execute("INSERT OR REPLACE INTO drive_uploads "
+                     "(path, cam_id, name, ts, size, status, tries, next_try, updated) "
+                     "VALUES (?, ?, ?, ?, 1, 'pending', 0, 0, ?)",
+                     (f"{cam}/{names['pending']}", cam, names["pending"], old_ts, now))
+        conn.commit()
+        old_cfg = (self.m.CONFIG.get("retention_days"), self.m.CONFIG.get("max_storage_gb"),
+                   self.m.CONFIG.get("max_disk_percent"))
+        try:
+            self.m.CONFIG["retention_days"] = 1
+            self.m.CONFIG["max_storage_gb"] = 0
+            self.m.CONFIG["max_disk_percent"] = 0
+            self.m.run_cleanup_now()
+        finally:
+            self.m.CONFIG["retention_days"], self.m.CONFIG["max_storage_gb"], \
+                self.m.CONFIG["max_disk_percent"] = old_cfg
+        self.assertFalse(os.path.exists(os.path.join(cam_dir, names["normal"])))
+        for key in ("locked", "pending", "active"):
+            self.assertTrue(os.path.exists(os.path.join(cam_dir, names[key])), key)
+
 class _FakeOnvifHandler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass

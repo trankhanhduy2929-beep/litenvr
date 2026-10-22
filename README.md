@@ -8,6 +8,7 @@ Web UI có **trang đăng nhập riêng** (`/login`), phiên làm việc bằng 
 - `NVR_PASS` (mặc định `admin`) — **nên đổi ngay** (mật khẩu mạnh 12+ ký tự).
 - `NVR_AUTH=off` để tắt đăng nhập (chỉ dùng trong LAN tin cậy).
 - `NVR_IFRAME=on` nếu muốn nhúng giao diện vào iframe (mặc định chặn iframe để chống clickjacking).
+- `NVR_COOKIE_SECURE=1` nếu chạy sau reverse proxy HTTPS nhưng request nội bộ là HTTP, để cookie phiên luôn có cờ `Secure`.
 
 Mọi client cũ dùng **HTTP Basic Auth** (script, Home Assistant, ffmpeg/VLC, Node-RED) vẫn hoạt động như trước — chỉ giao diện web chuyển sang phiên đăng nhập.
 

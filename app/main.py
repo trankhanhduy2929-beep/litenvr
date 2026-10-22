@@ -303,15 +303,23 @@ async def auth_guard(request: Request, call_next):
         if request.headers.get("X-NVR-CSRF") != "1":
             origin = request.headers.get("origin", "") or request.headers.get("referer", "")
             host = request.headers.get("host", "")
-            if not (origin and host and host in origin):
+            if not _same_origin(origin, host):
                 return JSONResponse({"detail": "Thiếu mã chống CSRF (X-NVR-CSRF)"}, status_code=403)
     if user.get("role") != "admin":
         need = path_permission(request)
         if need == "__admin__":
             return JSONResponse({"detail": "Chỉ quản trị viên được phép"}, status_code=403)
-        if need and not user["perms"].get(need):
+        if need == "view":
+            if not any(user["perms"].get(p) for p in ("live", "playback", "events")):
+                return JSONResponse({"detail": "Tài khoản không được cấp quyền này"}, status_code=403)
+        elif need == "events":
+            if not (user["perms"].get("events") or user["perms"].get("playback")):
+                return JSONResponse({"detail": "Tài khoản không được cấp quyền này"}, status_code=403)
+        elif need and not user["perms"].get(need):
             return JSONResponse({"detail": "Tài khoản không được cấp quyền này"}, status_code=403)
         cam = cam_path_segment(path)
+        if cam and path.startswith("/snapshots/"):
+            cam = _snapshot_owner(cam) or cam
         if cam and user.get("cameras") and cam not in user["cameras"]:
             return JSONResponse({"detail": "Không có quyền với camera này"}, status_code=403)
     return await call_next(request)
@@ -483,9 +491,16 @@ def load_config():
     except Exception:
         return json.loads(json.dumps(DEFAULT_CONFIG))
 
+_config_lock = threading.Lock()
+
 def save_config(cfg):
-    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-        json.dump(cfg, f, indent=2, ensure_ascii=False)
+    tmp = CONFIG_PATH + ".tmp"
+    with _config_lock:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, indent=2, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, CONFIG_PATH)
 
 CONFIG = load_config()
 
@@ -595,6 +610,7 @@ def unlock_recording(cam_id: str, fname: str) -> bool:
 
 SESSION_COOKIE = "litenvr_session"
 SESSION_TTL = 7 * 86400          # 7 ngày, tự gia hạn khi dùng
+SESSION_MAX_TTL = 30 * 86400     # tối đa 30 ngày kể từ lúc đăng nhập
 PBKDF2_ITERS = 200_000
 PERM_KEYS = ("live", "playback", "export", "ptz", "lock", "events")
 DEFAULT_PERMS = {"live": True, "playback": True, "export": False, "ptz": False, "lock": False, "events": True}
@@ -784,7 +800,7 @@ def session_user(token: str) -> Optional[dict]:
     try:
         c = db_conn().cursor()
         th = hashlib.sha256(token.encode()).hexdigest()
-        c.execute("SELECT username, expires FROM sessions WHERE token_hash=?", (th,))
+        c.execute("SELECT username, expires, created FROM sessions WHERE token_hash=?", (th,))
         row = c.fetchone()
         if not row:
             return None
@@ -803,8 +819,10 @@ def session_user(token: str) -> Optional[dict]:
         if row[1] - now < SESSION_TTL - 3600:  # tự gia hạn, tối đa 1 lần/giờ
             try:
                 conn = db_conn()
-                conn.execute("UPDATE sessions SET expires=? WHERE token_hash=?", (now + SESSION_TTL, th))
-                conn.commit()
+                new_exp = min(now + SESSION_TTL, int(row[2] or 0) + SESSION_MAX_TTL)
+                if new_exp > row[1]:
+                    conn.execute("UPDATE sessions SET expires=? WHERE token_hash=?", (new_exp, th))
+                    conn.commit()
             except Exception:
                 pass
         return user
@@ -866,6 +884,20 @@ def totp_uri(username: str, secret: str) -> str:
 def client_ip(request: Request) -> str:
     return request.client.host if request.client else ""
 
+def _same_origin(origin: str, host: str) -> bool:
+    """So khớp origin/referer với Host theo scheme + hostname + port (không substring)."""
+    try:
+        u = urllib.parse.urlsplit(origin or "")
+        if not u.scheme or not u.hostname or not host:
+            return False
+        h = urllib.parse.urlsplit("//" + host)
+        if not h.hostname:
+            return False
+        default = 443 if u.scheme == "https" else 80
+        return u.hostname == h.hostname and (u.port or default) == (h.port or default)
+    except Exception:
+        return False
+
 
 def resolve_auth(request: Request) -> tuple:
     """Trả (user_dict | None, nguồn xác thực)."""
@@ -876,13 +908,23 @@ def resolve_auth(request: Request) -> tuple:
             return user, "session"
     auth = request.headers.get("Authorization", "")
     if auth.startswith("Basic "):
+        ip = client_ip(request)
+        if login_locked(ip):
+            return None, ""
         try:
             user, _, pw = base64.b64decode(auth[6:]).decode("utf-8", "replace").partition(":")
             if secrets.compare_digest(user, NVR_USER) and secrets.compare_digest(pw, NVR_PASS):
+                clear_login_fails(ip)
                 return root_user(), "basic"
             row = get_user(user)
             if row is not None and row["enabled"] and verify_password(pw, row["salt"], row["pass_hash"]):
+                if row["totp_enabled"]:
+                    audit("login_fail", user, ip, "Basic Auth bị chặn vì tài khoản bật 2FA")
+                    return None, ""
+                clear_login_fails(ip)
                 return _row_to_user(row), "basic"
+            note_login_fail(ip)
+            audit("login_fail", user, ip, "Basic Auth sai mật khẩu")
         except Exception:
             pass
     return None, ""
@@ -905,7 +947,7 @@ def path_permission(request: Request) -> Optional[str]:
     if path in ("/api/me", "/api/logout", "/api/client_log") or path.startswith("/api/me/"):
         return None
     if method == "GET" and path == "/api/cameras":
-        return "live"
+        return "view"
     if path in ("/api/motion", "/api/ai/detect"):
         return "live"
     if path.startswith("/api/drive/play/"):
@@ -921,9 +963,13 @@ def path_permission(request: Request) -> Optional[str]:
         return "live"
     if path.startswith(("/api/stats", "/api/status/")):
         return "live"
-    if path.startswith(("/api/play/", "/api/timeline/", "/api/recording_days/", "/api/events", "/api/thumb/",
-                        "/recordings/", "/snapshots/", "/api/latest_snapshots")):
+    if path.startswith(("/api/events",)):
+        return "events"
+    if path.startswith(("/api/play/", "/api/timeline/", "/api/recording_days/", "/api/thumb/",
+                        "/recordings/", "/api/latest_snapshots")):
         return "playback"
+    if path.startswith("/snapshots/"):
+        return "view"
     if path.startswith("/api/export/"):
         return "export"
     if path.startswith("/api/ptz/"):
@@ -990,13 +1036,19 @@ _disk_paused = {"low": False}
 
 
 def disk_low() -> bool:
-    """True khi ổ chứa bản ghi trống ít hơn min_free_percent -> tạm dừng ghi hình mới."""
+    """True khi ổ chứa bản ghi hoặc tmpfs HLS/buffer gần đầy -> tạm dừng ghi hình."""
     try:
-        total, used, _ = shutil.disk_usage(STORAGE_DIR)
-        if not total:
-            return False
         pct = float(CONFIG.get("min_free_percent", 3) or 0)
-        return pct > 0 and ((total - used) / total) * 100 < pct
+        if pct <= 0:
+            return False
+        for path in (STORAGE_DIR, BUFFER_DIR, HLS_DIR):
+            try:
+                total, used, _ = shutil.disk_usage(path)
+            except OSError:
+                continue
+            if total and ((total - used) / total) * 100 < pct:
+                return True
+        return False
     except Exception:
         return False
 # Lưu thời điểm kết thúc ghi hình chuyển động của từng camera (Unix timestamp)
@@ -1825,7 +1877,7 @@ def write_go2rtc_config():
         "api:",
         f'  listen: "{GO2RTC_API}"',
         "rtsp:",
-        f'  listen: "127.0.0.1:8554"',
+        '  listen: "127.0.0.1:8554"',
         "webrtc:",
         f'  listen: ":{GO2RTC_WEBRTC_PORT}"',
         "streams:",
@@ -2490,6 +2542,11 @@ def live_supervisor():
             for cam_id, cam in list(CONFIG.get("cameras", {}).items()):
                 st = cam_status.get(cam_id, {})
                 sched = schedule_record_mode(cam)
+                if low and st.get("running") and sched != "off":
+                    log_event("warn", "Tạm dừng ghi hình do ổ đĩa/tmpfs gần đầy", cam_id)
+                    stop_camera_worker(cam_id)
+                    st["_sched"] = sched
+                    continue
                 # Lịch đổi trạng thái (vào/ra khung giờ) -> khởi động lại worker theo chế độ mới
                 if st.get("_sched") != sched:
                     if st.get("running"):
@@ -2800,13 +2857,20 @@ def run_cleanup_now():
     max_disk_percent = float(CONFIG.get("max_disk_percent", 85))
     deleted_count = 0
     locked = locked_paths()
+    drive_pending = _drive_pending_paths()
+    now = time.time()
 
-    def _is_locked(fp: str) -> bool:
+    def _protected(fp: str) -> bool:
         try:
             rel = os.path.relpath(fp, RECORDINGS_DIR)
+            if not rel.startswith(".."):
+                if rel in locked or rel in drive_pending:
+                    return True
+                if now - os.path.getmtime(fp) < 60:
+                    return True  # ffmpeg vừa ghi xong, tránh xoá segment đang mở
+            return rel in locked
         except Exception:
-            return False
-        return rel in locked
+            return True
 
     # 1. Xóa theo số ngày lưu trữ (mỗi camera có thể đặt số ngày riêng)
     for folder in [RECORDINGS_DIR, SNAPSHOTS_DIR]:
@@ -2820,7 +2884,7 @@ def run_cleanup_now():
             for file in files:
                 filepath = os.path.join(root, file)
                 try:
-                    if os.path.getmtime(filepath) < cutoff and not _is_locked(filepath):
+                    if os.path.getmtime(filepath) < cutoff and not _protected(filepath):
                         os.remove(filepath)
                         deleted_count += 1
                 except Exception:
@@ -2833,7 +2897,7 @@ def run_cleanup_now():
             for file in files:
                 fp = os.path.join(root, file)
                 try:
-                    if _is_locked(fp):
+                    if _protected(fp):
                         continue
                     all_media.append((os.path.getmtime(fp), os.path.getsize(fp), fp))
                 except Exception:
@@ -2875,7 +2939,7 @@ def run_cleanup_now():
             if not fname.endswith(".mp4"):
                 continue
             fp = os.path.join(cam_dir, fname)
-            if f"{cam_id}/{fname}" in locked:
+            if _protected(fp):
                 continue
             try:
                 size = os.path.getsize(fp)
@@ -3399,11 +3463,17 @@ def _onvif_unique_cam_id(name: str, host: str) -> str:
     return candidate
 
 
+def _valid_cam_id(cam_id: str) -> bool:
+    """Cho phép chữ/số/khoảng trắng tiếng Việt nhưng chặn path traversal và ký tự điều khiển."""
+    if not cam_id or cam_id in (".", ".."):
+        return False
+    return not any(ch in cam_id for ch in ("/", "\\", "\x00", "'", '"', "<", ">", "`")) and not any(ord(ch) < 32 for ch in cam_id)
+
 @app.post("/api/cameras")
 def add_or_update_camera(item: CameraItem):
     cam_id = item.cam_id.strip()
-    if not cam_id:
-        raise HTTPException(status_code=400, detail="Mã camera không hợp lệ")
+    if not _valid_cam_id(cam_id):
+        raise HTTPException(status_code=400, detail="Mã camera không hợp lệ (không dùng / \\ hoặc ký tự điều khiển)")
     stop_camera_worker(cam_id)
     CONFIG.setdefault("cameras", {})[cam_id] = _camera_record(item)
     save_config(CONFIG)
@@ -3417,7 +3487,7 @@ def bulk_add_cameras(req: BulkCamerasReq):
     added = 0
     for item in req.items:
         cam_id = item.cam_id.strip()
-        if not cam_id:
+        if not _valid_cam_id(cam_id):
             continue
         stop_camera_worker(cam_id)
         CONFIG.setdefault("cameras", {})[cam_id] = _camera_record(item)
@@ -3814,6 +3884,24 @@ def _valid_snapshot(path: str) -> bool:
     except OSError:
         return False
 
+def _snapshot_owner(filename: str) -> str:
+    """Suy ra cam_id của ảnh snapshot để kiểm tra quyền xem theo camera."""
+    name = os.path.basename(filename or "")
+    if not name:
+        return ""
+    try:
+        row = db_conn().execute(
+            "SELECT cam_id FROM events WHERE snapshot=? ORDER BY timestamp DESC LIMIT 1",
+            (name,)).fetchone()
+        if row and row[0]:
+            return row[0]
+    except Exception:
+        pass
+    for cid in CONFIG.get("cameras", {}):
+        if name.startswith(cid + "_"):
+            return cid
+    return ""
+
 def _latest_snapshot(cam_id: str) -> str:
     """Ảnh snapshot hợp lệ mới nhất của camera (dùng làm ảnh dự phòng cho sự kiện)."""
     try:
@@ -3948,9 +4036,27 @@ def ai_event_label(objects: List[str], custom: str = "") -> str:
     return "AI: " + ", ".join(names)
 
 
+def _safe_remote_url(url: str) -> bool:
+    """Chặn SSRF vào loopback/link-local/metadata; vẫn cho phép thiết bị LAN RFC1918."""
+    try:
+        u = urllib.parse.urlsplit(url or "")
+        if u.scheme not in ("http", "https") or not u.hostname:
+            return False
+        infos = socket.getaddrinfo(u.hostname, u.port or (443 if u.scheme == "https" else 80),
+                                    type=socket.SOCK_STREAM)
+        if not infos:
+            return False
+        for info in infos:
+            ip = ipaddress.ip_address(info[4][0])
+            if ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_reserved or ip.is_unspecified:
+                return False
+        return True
+    except Exception:
+        return False
+
 def _download_snapshot(url: str, dest: str, max_bytes: int = 8 * 1024 * 1024) -> bool:
     """Tải ảnh snapshot từ URL (http/https) về dest. Trả True nếu thành công."""
-    if not url.lower().startswith(("http://", "https://")):
+    if not _safe_remote_url(url):
         return False
     return _fetch_snapshot(url, dest, max_bytes=max_bytes, label="AI")
 
@@ -4010,16 +4116,18 @@ def handle_motion(cam_id: str, label: str, snap_url: str = ""):
 
 
 @app.post("/api/motion")
-def trigger_motion(payload: MotionPayload):
+def trigger_motion(payload: MotionPayload, request: Request):
+    assert_cam_access(request, payload.cam_id)
     result = handle_motion(payload.cam_id, payload.label)
     if result is None:
         raise HTTPException(status_code=404, detail="Camera không tồn tại")
     return result
 
 @app.post("/api/ai/detect")
-def trigger_ai_detect(payload: AiDetectPayload):
+def trigger_ai_detect(payload: AiDetectPayload, request: Request):
     """Nhận sự kiện từ bộ nhận diện AI bên ngoài (Frigate, DeepStack, HA...) và
     ghi thành sự kiện có nhãn tiếng Việt (Người, Xe...)."""
+    assert_cam_access(request, payload.cam_id)
     label = ai_event_label(payload.objects, payload.label)
     result = handle_motion(payload.cam_id, label, payload.snapshot_url)
     if result is None:
@@ -4793,7 +4901,19 @@ def _backup_file(rel: str, ftp=None, smb=None):
                 raise RuntimeError("thư mục đích không tồn tại")
             dest_dir = os.path.join(root, day, cam)
             os.makedirs(dest_dir, exist_ok=True)
-            shutil.copy2(src, os.path.join(dest_dir, fn))
+            dest = os.path.join(dest_dir, fn)
+            tmp = dest + ".part"
+            try:
+                shutil.copy2(src, tmp)
+                if os.path.getsize(tmp) != os.path.getsize(src):
+                    raise RuntimeError("sao lưu thiếu dữ liệu")
+                os.replace(tmp, dest)
+            finally:
+                try:
+                    if os.path.exists(tmp):
+                        os.remove(tmp)
+                except OSError:
+                    pass
         elif kind == "ftp":
             if ftp is None:
                 ftp = _ftp_connect(cfg)
@@ -4853,14 +4973,18 @@ def backup_worker():
                     except Exception as e:
                         log_event("warn", f"Backup SMB kết nối lỗi: {mask_secrets(str(e))}")
                         files = []
+                fail_streak = 0
                 for rel in files[:50]:
                     if _shutdown.is_set():
                         break
                     try:
                         _backup_file(rel, ftp, smb)
+                        fail_streak = 0
                     except Exception as e:
                         log_event("warn", f"Sao lưu lỗi {rel}: {mask_secrets(str(e))}")
-                        break
+                        fail_streak += 1
+                        if fail_streak >= 3:
+                            break  # lỗi hệ thống (kết nối/quyền), tránh spam cả batch
                 if ftp:
                     try:
                         ftp.quit()
@@ -5450,9 +5574,7 @@ def drive_scan_once():
             names = sorted(f for f in os.listdir(cam_dir) if REC_NAME_RE.match(f))
         except Exception:
             continue
-        for i, name in enumerate(names):
-            if i == len(names) - 1:
-                continue  # file mới nhất có thể đang được ffmpeg ghi
+        for name in names:
             fpath = os.path.join(cam_dir, name)
             try:
                 st = os.stat(fpath)
@@ -5503,6 +5625,8 @@ def drive_queue_backfill(cam_id: str, date_from: str, date_to: str) -> int:
                 continue
             fpath = os.path.join(cam_dir, name)
             try:
+                if now - os.path.getmtime(fpath) < 10:
+                    continue  # có thể ffmpeg vẫn đang ghi
                 size = os.path.getsize(fpath)
             except Exception:
                 continue
@@ -5528,6 +5652,7 @@ def drive_cleanup(force: bool = False) -> dict:
     rows = conn.execute(
         "SELECT path, name, cam_id, drive_id, size, ts FROM drive_uploads "
         "WHERE status='done' ORDER BY ts ASC").fetchall()
+    locked = locked_paths()
     used = sum(int(r["size"] or 0) for r in rows)
     max_gb = float(g.get("max_gb") or 0)
     min_free = max(200, int(g.get("min_free_mb") or 2000)) * 1024 * 1024
@@ -5547,6 +5672,8 @@ def drive_cleanup(force: bool = False) -> dict:
             break
         if ok_used and ok_free:
             break
+        if r["path"] in locked:
+            continue
         try:
             drive_delete_file(r["drive_id"])
         except DriveAuthError:
@@ -5595,7 +5722,7 @@ def drive_process_row(row) -> str:
             "UPDATE drive_uploads SET status='done', error='', drive_id=?, size=?, tries=0, next_try=0, updated=? WHERE path=?",
             (res.get("id") or "", size, now, row["path"]))
         conn.commit()
-        if cam_drive_target(row["cam_id"]) == "drive":
+        if cam_drive_target(row["cam_id"]) == "drive" and row["path"] not in locked_paths():
             # Camera chỉ lưu trên Drive: xoá bản gốc trên ổ cứng sau khi tải xong
             try:
                 os.remove(local_path)
@@ -6143,6 +6270,9 @@ def import_config(payload: Dict[str, Any] = Body(...)):
     for cid in list(CONFIG.get("cameras", {})):
         stop_camera_worker(cid)
     merged = _normalize_config(json.loads(json.dumps(payload)))
+    bad = [cid for cid in (merged.get("cameras") or {}) if not _valid_cam_id(cid)]
+    if bad:
+        raise HTTPException(status_code=400, detail=f"Mã camera không hợp lệ trong file: {bad[0]}")
     CONFIG.clear()
     CONFIG.update(merged)
     save_config(CONFIG)
@@ -6369,7 +6499,9 @@ def api_login(req: LoginReq, request: Request):
             pass
     audit("login_ok", user["username"], ip)
     resp = JSONResponse({"status": "ok", "user": user})
-    resp.set_cookie(SESSION_COOKIE, token, max_age=SESSION_TTL, httponly=True, samesite="lax", path="/")
+    secure = request.url.scheme == "https" or os.environ.get("NVR_COOKIE_SECURE", "").lower() in ("1", "true", "on")
+    resp.set_cookie(SESSION_COOKIE, token, max_age=SESSION_TTL, httponly=True,
+                    samesite="lax", path="/", secure=secure)
     return resp
 
 

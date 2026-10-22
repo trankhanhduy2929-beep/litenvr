@@ -3800,13 +3800,13 @@
           : `<div class="tile-noimg">Không có ảnh</div>`;
         tile.innerHTML = `${snap}
           ${off ? '<span class="tile-offline">● Mất kết nối</span>' : ""}
-          <div class="tile-info"><span>${info.name}</span><span class="badge ${info.record_mode === 'motion' ? 'motion' : (info.record_mode === 'off' ? 'off' : '')}">${modeTxt}</span></div>`;
+          <div class="tile-info"><span>${esc(info.name)}</span><span class="badge ${info.record_mode === 'motion' ? 'motion' : (info.record_mode === 'off' ? 'off' : '')}">${modeTxt}</span></div>`;
         const pick = () => sceneSwap(() => {
           currentCam = id;
           document.getElementById("camSelect").value = id;
           renderCamStrip(stats);
           loadTimeline();
-          playLive();
+          if (can("live")) playLive();
         });
         tile.onclick = pick;
         tile.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pick(); } };
@@ -3862,21 +3862,17 @@
       return desired;
     }
 
-    async function init() {
-      if (isAdmin()) await loadSystem();
-      await refreshCameras();
+    let _playerWired = false;
+    function wirePlayerControls() {
+      if (_playerWired) return;
+      _playerWired = true;
       const sel = document.getElementById("camSelect");
-      if (Object.keys(cameras).length === 0) {
-        document.getElementById("statusText").textContent = isAdmin() ? "Chưa có camera. Bấm ⚙️ → Quản lý Camera để thêm." : "Chưa có camera được cấp quyền.";
-        if (isAdmin()) openCamModal();
-        return;
-      }
       sel.onchange = () => sceneSwap(() => {
         currentCam = sel.value;
         closeCalendar();
         renderCamStrip();
         loadTimeline();
-        playLive();
+        if (can("live")) playLive();
       });
       dateInput.onchange = () => { loadTimeline(); updateDateBadge(); };
       initScrubber();
@@ -3899,13 +3895,24 @@
         }, 15000);
         setInterval(updateLogBadge, 15000);
       }
+    }
+
+    async function init() {
+      if (isAdmin()) await loadSystem();
+      await refreshCameras();
+      if (Object.keys(cameras).length === 0) {
+        document.getElementById("statusText").textContent = isAdmin() ? "Chưa có camera. Bấm ⚙️ → Quản lý Camera để thêm." : "Chưa có camera được cấp quyền.";
+        if (isAdmin()) openCamModal();
+        return;
+      }
+      wirePlayerControls();
       await refreshSnapshots();
       renderCamStrip();
       refreshCamStatuses();
       await loadStats();
       updateLogBadge();
       await loadTimeline();
-      playLive();
+      if (can("live")) playLive();
       if (gridCount > 0) renderGrid();
       applyDeepLink();
     }
@@ -3989,10 +3996,15 @@
         const div = document.createElement("div");
         div.className = "cam-item";
         div.innerHTML = `<div><b>${esc(info.name)}</b> (${esc(id)}) <span class="badge ${mode}">${modeLabel}</span>${info.room ? ` <span class="badge off">${esc(info.room)}</span>` : ""}</div>
-                         <div style="display:flex;gap:6px;">
-                           <button onclick="editCam('${id}')">Sửa</button>
-                           <button onclick="removeCam('${id}')">Xóa</button>
-                         </div>`;
+                         <div style="display:flex;gap:6px;"></div>`;
+        const actions = div.lastElementChild;
+        const editBtn = document.createElement("button");
+        editBtn.textContent = "Sửa";
+        editBtn.onclick = () => editCam(id);
+        const delBtn = document.createElement("button");
+        delBtn.textContent = "Xóa";
+        delBtn.onclick = () => removeCam(id);
+        actions.append(editBtn, delBtn);
         box.appendChild(div);
       }
     }
@@ -4314,6 +4326,7 @@
       if (!editId || wasCurrent) {
         currentCam = payload.cam_id;
         document.getElementById("camSelect").value = payload.cam_id;
+        wirePlayerControls();
         await refreshSnapshots();
         renderCamStrip();
         await loadTimeline();
@@ -4326,7 +4339,12 @@
     async function removeCam(id) {
       if (!confirm(`Xóa camera ${id}?`)) return;
       const wasCurrent = currentCam === id;
-      await fetch(`api/cameras/${id}`, {method: "DELETE"});
+      const r = await fetch(`api/cameras/${encodeURIComponent(id)}`, {method: "DELETE"});
+      if (!r.ok) {
+        const d = await r.json().catch(() => ({}));
+        alert("Không xóa được camera: " + (d.detail || r.status));
+        return;
+      }
       const selected = await refreshCameras(wasCurrent ? "" : currentCam);
       renderCamList();
       if (!selected) {
@@ -4337,6 +4355,7 @@
       if (wasCurrent) {
         currentCam = selected;
         document.getElementById("camSelect").value = selected;
+        wirePlayerControls();
         await refreshSnapshots();
         renderCamStrip();
         await loadTimeline();
@@ -4374,12 +4393,25 @@
         method: "POST", headers: {"Content-Type": "application/json"},
         body: JSON.stringify({items})
       });
-      const d = await r.json();
-      alert(`Đã thêm ${d.added} camera.`);
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        alert("Không thêm được camera: " + (d.detail || r.status));
+        return;
+      }
+      const added = Number(d.added) || 0;
+      alert(`Đã thêm ${added} camera.`);
       closeCamModal();
-      await refreshCameras();
-      renderCamList();
-      renderCamStrip();
+      if (added > 0) {
+        wirePlayerControls();
+        const selected = await refreshCameras();
+        renderCamList();
+        renderCamStrip();
+        if (selected) {
+          if (gridCount > 0) { gridCount = 0; renderGrid(); }
+          await loadTimeline();
+          playLive();
+        }
+      }
     }
 
     let onvifDevices = [];
@@ -4692,11 +4724,16 @@
         post_motion_sec: parseInt(document.getElementById("inpPostMotion").value) || 60,
         ram_buffer: document.getElementById("inpRamBuffer").checked
       };
-      await fetch("api/storage", {
+      const r = await fetch("api/storage", {
         method: "POST",
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify(payload)
       });
+      if (!r.ok) {
+        const d = await r.json().catch(() => ({}));
+        alert("Không lưu được cấu hình: " + (d.detail || r.status));
+        return;
+      }
       closeStorageModal();
       await loadSystem();
     }
@@ -4751,7 +4788,7 @@
     }
 
     async function saveHass() {
-      await fetch("api/hass", {
+      const r = await fetch("api/hass", {
         method: "POST",
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify({
@@ -4761,6 +4798,11 @@
           entities: {}
         })
       });
+      if (!r.ok) {
+        const d = await r.json().catch(() => ({}));
+        alert("Không lưu được cấu hình Home Assistant: " + (d.detail || r.status));
+        return;
+      }
       closeHassModal();
     }
 
@@ -4929,7 +4971,10 @@
       startLiveHeartbeat();
       video.onended = null;
       const info = await waitLiveReady(camId, seq);
-      if (!info || seq !== liveWaitSeq || camId !== currentCam || !liveMode) return;
+      if (!info || seq !== liveWaitSeq || camId !== currentCam || !liveMode) {
+        stopLiveHeartbeat();
+        return;
+      }
       const codec = String(info.detected_codec || "").toLowerCase();
       const transcoding = codec === "hevc" || codec === "h265";
       const liveLabel = transcoding ? "HLS - H.265 chuyển mã" : "HLS";
@@ -4952,6 +4997,7 @@
             statusEl.textContent = "Live lỗi: " + data.details + " (kiểm tra camera/đổi codec H.264)";
             __clientLog("error", "Live HLS: " + data.details);
             inst.destroy(); if (hls === inst) hls = null;
+            stopLiveHeartbeat();
           }
         });
         inst.on(Hls.Events.MANIFEST_PARSED, () => {
@@ -4966,6 +5012,7 @@
         video.play().catch(() => {});
       } else {
         statusEl.textContent = "Trình duyệt không hỗ trợ HLS. Hãy dùng Chrome/Edge/Safari mới.";
+        stopLiveHeartbeat();
       }
     }
 
@@ -5166,6 +5213,11 @@
     function setCursor(sec, showTip) {
       lastCursorSec = sec;
       const pct = Math.max(0, Math.min(100, tlPct(sec)));
+      const slider = document.getElementById("timelineBar");
+      if (slider) {
+        slider.setAttribute("aria-valuenow", String(Math.round(pct)));
+        slider.setAttribute("aria-valuetext", fmtHMS(sec));
+      }
       const line = document.getElementById("cursorLine");
       const handle = document.getElementById("cursorHandle");
       const tip = document.getElementById("timeTip");
@@ -5533,6 +5585,11 @@
     let scrubbing = false;
     function initScrubber() {
       const bar = document.getElementById("timelineBar");
+      bar.tabIndex = 0;
+      bar.setAttribute("role", "slider");
+      bar.setAttribute("aria-label", "Dòng thời gian ghi hình");
+      bar.setAttribute("aria-valuemin", "0");
+      bar.setAttribute("aria-valuemax", "100");
       const secAt = (ev) => {
         const rect = bar.getBoundingClientRect();
         const x = Math.min(Math.max(ev.clientX - rect.left, 0), rect.width);
@@ -5558,6 +5615,22 @@
       };
       bar.addEventListener("pointerup", finish);
       bar.addEventListener("pointercancel", () => { scrubbing = false; bar.classList.remove("scrubbing"); });
+      bar.addEventListener("keydown", (ev) => {
+        const step = ev.shiftKey ? 60 : 5;
+        let sec = lastCursorSec != null ? lastCursorSec : timelineStart;
+        if (ev.key === "ArrowLeft") sec -= step;
+        else if (ev.key === "ArrowRight") sec += step;
+        else if (ev.key === "Home") sec = timelineStart;
+        else if (ev.key === "End") sec = timelineStart + timelineZoom;
+        else if (ev.key === "Enter" || ev.key === " ") {
+          ev.preventDefault();
+          playAtSecond(Math.round(sec));
+          return;
+        } else return;
+        ev.preventDefault();
+        sec = Math.max(timelineStart, Math.min(timelineStart + timelineZoom, sec));
+        setCursor(sec, true);
+      });
       bar.addEventListener("wheel", (ev) => {
         if (timelineZoom >= 86400) return;
         if (!ev.shiftKey && Math.abs(ev.deltaX) <= Math.abs(ev.deltaY)) return;
@@ -5919,8 +5992,11 @@
         const tile = document.createElement("div");
         tile.className = "grid-tile";
         tile.title = "Bấm để xem 1 camera (thoát lưới)";
+        tile.tabIndex = 0;
+        tile.setAttribute("role", "button");
+        tile.setAttribute("aria-label", "Xem camera " + (cameras[id].name || id));
         tile.innerHTML = `<video muted playsinline autoplay></video><div class="gname">${esc(cameras[id].name || id)}</div>`;
-        tile.onclick = () => sceneSwap(() => {
+        const pick = () => sceneSwap(() => {
           gridCount = 0;
           currentCam = id;
           document.getElementById("camSelect").value = id;
@@ -5928,9 +6004,11 @@
           loadTimeline();
           renderGrid();
         });
+        tile.onclick = pick;
+        tile.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pick(); } };
         gv.appendChild(tile);
         const v = tile.querySelector("video");
-        const url = `hls/${id}/live.m3u8`;
+        const url = `hls/${encodeURIComponent(id)}/live.m3u8`;
         let h = null;
         if (typeof Hls !== "undefined" && Hls.isSupported()) {
           h = new Hls(liveHlsConfig());
@@ -6320,19 +6398,21 @@
         seenGroup = true;
       });
       document.getElementById("btnLogout").hidden = !!(ME && ME.auth_enabled === false);
-      if (ME && !can("live")) {
+      if (ME && !can("live") && !can("playback")) {
         [".player-box", "#camStrip", "#gridView"].forEach(sel => {
           const el = document.querySelector(sel);
           if (el) el.style.display = "none";
         });
       }
-      if (ME && !can("playback")) {
-        [".timeline-container", "#eventsList"].forEach(sel => {
-          const el = document.querySelector(sel);
-          if (el) el.style.display = "none";
-        });
+      if (ME && !can("live")) {
+        const grid = document.getElementById("gridView");
+        if (grid) grid.style.display = "none";
       }
-      if (ME && !can("events")) {
+      if (ME && !can("playback")) {
+        const tl = document.querySelector(".timeline-container");
+        if (tl) tl.style.display = "none";
+      }
+      if (ME && !can("events") && !can("playback")) {
         const el = document.getElementById("eventsList");
         if (el) el.style.display = "none";
       }
@@ -7029,6 +7109,72 @@
       } catch (e) {}
     }, 60000);
 
+    function enhanceAccessibility() {
+      const focusables = 'input:not([type="hidden"]):not([disabled]),select:not([disabled]),textarea:not([disabled]),button:not([disabled]),a[href],[tabindex]:not([tabindex="-1"])';
+      let modalReturnFocus = null;
+      document.querySelectorAll(".modal").forEach((modal, idx) => {
+        modal.setAttribute("role", "dialog");
+        modal.setAttribute("aria-modal", "true");
+        modal.setAttribute("aria-hidden", modal.classList.contains("open") ? "false" : "true");
+        const heading = modal.querySelector("h3");
+        if (heading) {
+          if (!heading.id) heading.id = "dialogTitle" + idx;
+          modal.setAttribute("aria-labelledby", heading.id);
+        } else {
+          modal.setAttribute("aria-label", "Hộp thoại");
+        }
+        new MutationObserver(() => {
+          const open = modal.classList.contains("open");
+          modal.setAttribute("aria-hidden", open ? "false" : "true");
+          if (open) {
+            modalReturnFocus = document.activeElement;
+            setTimeout(() => {
+              const first = [...modal.querySelectorAll(focusables)].find(el => el.offsetParent !== null);
+              if (first) first.focus({preventScroll: true});
+            }, 30);
+          } else if (modalReturnFocus && modal.contains(document.activeElement)) {
+            try { modalReturnFocus.focus({preventScroll: true}); } catch (e) {}
+            modalReturnFocus = null;
+          }
+        }).observe(modal, {attributes: true, attributeFilter: ["class"]});
+      });
+      document.addEventListener("keydown", (ev) => {
+        if (ev.key !== "Tab") return;
+        const open = [...document.querySelectorAll(".modal.open")].pop();
+        if (!open) return;
+        const items = [...open.querySelectorAll(focusables)].filter(el => el.offsetParent !== null);
+        if (!items.length) { ev.preventDefault(); return; }
+        const first = items[0], last = items[items.length - 1];
+        if (!open.contains(document.activeElement)) {
+          ev.preventDefault(); first.focus();
+        } else if (ev.shiftKey && document.activeElement === first) {
+          ev.preventDefault(); last.focus();
+        } else if (!ev.shiftKey && document.activeElement === last) {
+          ev.preventDefault(); first.focus();
+        }
+      });
+      document.querySelectorAll("input,select,textarea").forEach(el => {
+        if (el.type === "hidden" || el.getAttribute("aria-label") || el.getAttribute("aria-labelledby")) return;
+        let text = "";
+        if (el.id) {
+          const safeId = (window.CSS && CSS.escape) ? CSS.escape(el.id) : el.id.replace(/["\\]/g, "\\$&");
+          const label = document.querySelector('label[for="' + safeId + '"]');
+          if (label) text = label.textContent;
+        }
+        if (!text && el.closest("label")) text = el.closest("label").textContent;
+        if (!text) text = el.placeholder || el.title || "";
+        if (text.trim()) el.setAttribute("aria-label", text.trim().replace(/\s+/g, " "));
+      });
+      ["statusText","hassStatus","sessMsg","drvMsg","tbMsg","secStatus","notifyStatus","tfaMsg","evtSearchCount"].forEach(id => {
+        const el = document.getElementById(id);
+        if (el && !el.getAttribute("aria-live")) {
+          el.setAttribute("role", "status");
+          el.setAttribute("aria-live", "polite");
+        }
+      });
+    }
+
+    enhanceAccessibility();
     initSecurity().then(ok => { if (ok) init(); });
   </script>
 </body>

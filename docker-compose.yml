@@ -4,6 +4,11 @@ services:
     image: ghcr.io/trankhanhduy2929-beep/litenvr_docker_zimaos:latest
     container_name: litenvr
     restart: unless-stopped
+    init: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     ports:
       - target: 8080
         published: "8080"
