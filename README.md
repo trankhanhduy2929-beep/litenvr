@@ -2,6 +2,9 @@
 
 Ứng dụng NVR độc lập siêu nhẹ (CPU < 1%), ghi hình trực tiếp RTSP (`-c:v copy`) và nhận tín hiệu Motion từ Home Assistant.
 
+Phiên bản LiteNVR hiện ở góc thương hiệu trên thanh công cụ (lấy từ biến môi trường
+`LITENVR_VERSION`, mặc định theo bản build; API `GET /api/version`).
+
 ## Đăng nhập web
 Web UI có **trang đăng nhập riêng** (`/login`), phiên làm việc bằng cookie an toàn, có thể **tạo tài khoản con** với quyền giới hạn và **xác thực 2 lớp (2FA)**.
 - `NVR_USER` (mặc định `admin`) — **tài khoản gốc**, toàn quyền, không xoá được.
@@ -137,8 +140,10 @@ Bấm **💾 Lưu trữ ngoài (SMB/FTP)** (admin) để tự động chuyển c
 - **FTP/FTPS**: nhập máy chủ, cổng, tài khoản/mật khẩu, thư mục đích; bật **FTPS** nếu server yêu cầu TLS.
 - **Thư mục tự chia theo ngày**: `<đích>/YYYY-MM-DD/<mã camera>/<tên file>`.
 - **Sau khi chuyển**: `copy` giữ bản gốc trên NVR; `move` **xoá bản ghi khỏi ổ NVR** sau khi chuyển thành công, chỉ còn dữ liệu trên máy chủ ngoài. Nếu camera đang chờ tải lên Google Drive, LiteNVR tạm hoãn chuyển để không mất file.
+- **Dung lượng share SMB**: trong phần SMB bấm **↻ Kiểm tra** để xem còn trống/tổng dung lượng và tỷ lệ đã dùng. API: `GET /api/backup/smb/space`.
+- **Tự động xóa trên SMB**: bật **Tự động xóa bản ghi cũ trên SMB**, đặt số ngày giữ, GB tối đa và GB trống tối thiểu (0 = tắt từng giới hạn). LiteNVR chỉ xóa file do chính nó đã sao lưu và ghi nhận trong `backup_done`, không đụng file khác trên share. Bản ghi đang khoá hoặc vừa chuyển trong 2 phút được bỏ qua. Nút **🧹 Dọn SMB ngay** chạy theo cấu hình đang lưu; API: `POST /api/backup/smb/cleanup`.
 - **Camera**: bỏ trống = tất cả. Bản ghi **đang ghi** (mới hơn 30 giây), bản ghi **đã chuyển** và bản ghi **đang khoá** sẽ bị bỏ qua; file thành công được ghi nhận để không chuyển lại.
-- Nút **🔌 Kiểm tra đích** thử ghi file hoặc kết nối SMB/FTP. API: `GET/POST /api/backup`, `POST /api/backup/test`.
+- Nút **🔌 Kiểm tra đích** thử ghi file hoặc kết nối SMB/FTP, kèm dung lượng share nếu là SMB. API: `GET/POST /api/backup`, `POST /api/backup/test`.
 - **Xem lại trực tiếp từ SMB**: trên dòng thời gian chọn **Nguồn phát → Chỉ SMB/Samba**; LiteNVR liệt kê file trong `<thư mục con>/YYYY-MM-DD/<mã camera>` và stream qua HTTP Range để tua mà không tải cả file. Chỉ áp dụng khi kiểu lưu trữ ngoài là SMB (không áp dụng cho thư mục mount/FTP), và trình duyệt phải phát được codec gốc (H.264).
 
 ## Chọn nguồn phát lại

@@ -41,6 +41,7 @@ mimetypes.add_type("video/mp2t", ".ts")
 NVR_USER = os.environ.get("NVR_USER", "admin")
 NVR_PASS = os.environ.get("NVR_PASS", "admin")
 AUTH_ENABLED = os.environ.get("NVR_AUTH", "on").lower() not in ("off", "0", "false", "no")
+APP_VERSION = (os.environ.get("LITENVR_VERSION") or "1.9.6").strip() or "1.9.6"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 _STATIC_CAND = os.path.join(BASE_DIR, "static")
@@ -390,6 +391,10 @@ DEFAULT_CONFIG = {
         "ftp_tls": False,             # True = FTPS (FTP qua TLS)
         "smb_host": "", "smb_port": 445, "smb_share": "", "smb_user": "", "smb_pass": "",
         "smb_domain": "", "smb_dir": "",
+        "smb_cleanup_enabled": False,  # Tự dọn bản ghi LiteNVR cũ trên SMB
+        "smb_retention_days": 0,       # 0 = không xoá theo số ngày
+        "smb_max_gb": 0,               # 0 = không giới hạn dung lượng bản ghi LiteNVR
+        "smb_min_free_gb": 2,          # Dọn khi share còn trống dưới mức này (0 = tắt)
         "mode": "copy",               # copy = giữ ở HDD; move = xoá sau khi sao lưu
         "cameras": [],                # [] = tất cả camera
         "since_ts": 0                 # chỉ sao lưu bản ghi mới hơn mốc này
@@ -569,9 +574,20 @@ def init_db():
             path TEXT PRIMARY KEY,
             cam_id TEXT,
             size INTEGER,
-            ts REAL
+            ts REAL,
+            dest TEXT NOT NULL DEFAULT '',
+            deleted INTEGER NOT NULL DEFAULT 0,
+            deleted_ts REAL
         )
     """)
+    backup_cols = {row[1] for row in c.execute("PRAGMA table_info(backup_done)").fetchall()}
+    if "dest" not in backup_cols:
+        c.execute("ALTER TABLE backup_done ADD COLUMN dest TEXT NOT NULL DEFAULT ''")
+    if "deleted" not in backup_cols:
+        c.execute("ALTER TABLE backup_done ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0")
+    if "deleted_ts" not in backup_cols:
+        c.execute("ALTER TABLE backup_done ADD COLUMN deleted_ts REAL")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_backup_dest ON backup_done(dest, deleted, ts)")
     conn.commit()
 
 init_db()
@@ -944,7 +960,7 @@ def cam_path_segment(path: str) -> Optional[str]:
 def path_permission(request: Request) -> Optional[str]:
     """Quyền cần có cho request ('__admin__' = chỉ admin, None = chỉ cần đăng nhập)."""
     path, method = request.url.path, request.method
-    if path in ("/api/me", "/api/logout", "/api/client_log") or path.startswith("/api/me/"):
+    if path in ("/api/me", "/api/logout", "/api/client_log", "/api/version") or path.startswith("/api/me/"):
         return None
     if method == "GET" and path == "/api/cameras":
         return "view"
@@ -3306,6 +3322,7 @@ def get_system_info():
     total, used, free = shutil.disk_usage(STORAGE_DIR)
     nvr_used_bytes = get_storage_dir_size()
     return {
+        "version": APP_VERSION,
         "retention_days": CONFIG.get("retention_days", 7),
         "max_storage_gb": CONFIG.get("max_storage_gb", 0),
         "max_disk_percent": CONFIG.get("max_disk_percent", 85),
@@ -4782,6 +4799,10 @@ class BackupSettings(BaseModel):
     smb_pass: str = ""                # để trống khi lưu = giữ mật khẩu cũ
     smb_domain: str = ""
     smb_dir: str = ""
+    smb_cleanup_enabled: bool = False
+    smb_retention_days: float = 0
+    smb_max_gb: float = 0
+    smb_min_free_gb: float = 2
     mode: str = "copy"                # copy | move
     cameras: List[str] = []
     since_ts: float = 0
@@ -4892,6 +4913,27 @@ class SmbTarget:
 
     def open_recording(self, day: str, cam: str, fname: str):
         return self._client.open_file(self.path(day, cam, fname), "rb")
+
+    def remove(self, path: str):
+        self._client.remove(path)
+
+    def stat_volume(self) -> dict:
+        try:
+            raw = self._client.stat_volume(self.path())
+        except Exception:
+            if not self._base:
+                raise
+            raw = self._client.stat_volume(f"\\\\{self._host}\\{self._share}")
+        total = int(getattr(raw, "total_size", 0) or 0)
+        actual_free = int(getattr(raw, "actual_available_size", 0) or 0)
+        caller_free = int(getattr(raw, "caller_available_size", 0) or 0)
+        free = actual_free if actual_free > 0 else caller_free
+        return {
+            "total": total,
+            "free": max(0, min(free, total)) if total else max(0, free),
+            "caller_free": max(0, caller_free),
+            "used": max(0, total - free) if total else 0,
+        }
 
     def probe(self):
         if self._base:
@@ -5049,8 +5091,10 @@ def _backup_file(rel: str, ftp=None, smb=None):
         size = os.path.getsize(src)
     except OSError:
         size = 0
-    conn.execute("INSERT OR REPLACE INTO backup_done (path, cam_id, size, ts) VALUES (?,?,?,?)",
-                 (rel, cam, size, time.time()))
+    conn.execute(
+        "INSERT OR REPLACE INTO backup_done (path, cam_id, size, ts, dest, deleted, deleted_ts) "
+        "VALUES (?,?,?,?,?,0,NULL)",
+        (rel, cam, size, time.time(), kind))
     conn.commit()
     cam_cfg = CONFIG.get("cameras", {}).get(cam) or {}
     if cfg.get("mode") == "move" or cam_cfg.get("storage_smb_move"):
@@ -5060,26 +5104,143 @@ def _backup_file(rel: str, ftp=None, smb=None):
             pass
 
 
+_smb_cleanup_state = {"last_cleanup": 0.0, "last_result": {}}
+
+
+def _backup_recording_ts(rel: str, fallback_ts: float = 0) -> float:
+    day = _recording_day(rel.split("/", 1)[-1], fallback_ts)
+    try:
+        return time.mktime(time.strptime(day, "%Y-%m-%d"))
+    except (TypeError, ValueError, OverflowError):
+        return float(fallback_ts or 0)
+
+
+def smb_cleanup(force: bool = False, target=None) -> dict:
+    """Xoá bản ghi cũ do LiteNVR đã sao lưu lên SMB khi vượt giới hạn."""
+    cfg = _backup_cfg()
+    now = time.time()
+    if str(cfg.get("kind") or "") != "smb":
+        return {"deleted": 0, "freed": 0, "reason": "not_smb"}
+    if not cfg.get("enabled"):
+        return {"deleted": 0, "freed": 0, "reason": "disabled"}
+    if not force and not cfg.get("smb_cleanup_enabled"):
+        return {"deleted": 0, "freed": 0, "reason": "disabled"}
+    if not (cfg.get("smb_host") or "").strip() or not (cfg.get("smb_share") or "").strip():
+        return {"deleted": 0, "freed": 0, "reason": "not_configured"}
+    if not force and now - float(_smb_cleanup_state.get("last_cleanup") or 0) < 600:
+        return {"deleted": 0, "freed": 0, "reason": "wait"}
+
+    try:
+        retention_days = max(0.0, float(cfg.get("smb_retention_days") or 0))
+        max_gb = max(0.0, float(cfg.get("smb_max_gb") or 0))
+        min_free_gb = max(0.0, float(cfg.get("smb_min_free_gb") or 0))
+    except (TypeError, ValueError):
+        retention_days = max_gb = 0.0
+        min_free_gb = 2.0
+    if retention_days <= 0 and max_gb <= 0 and min_free_gb <= 0:
+        _smb_cleanup_state["last_cleanup"] = now
+        return {"deleted": 0, "freed": 0, "reason": "no_limits"}
+
+    own_target = target is None
+    if own_target:
+        target = SmbTarget(cfg)
+    conn = db_conn()
+    try:
+        try:
+            vol = target.stat_volume()
+        except Exception as e:
+            if force:
+                raise
+            log_event("warn", f"SMB cleanup không đọc được dung lượng: {mask_secrets(str(e))}")
+            _smb_cleanup_state["last_cleanup"] = now
+            return {"deleted": 0, "freed": 0, "reason": "space_error"}
+        total = int(vol.get("total") or 0)
+        free = int(vol.get("free") or 0)
+        rows = list(conn.execute(
+            "SELECT path, cam_id, size, ts FROM backup_done "
+            "WHERE dest='smb' AND COALESCE(deleted, 0)=0").fetchall())
+        rows.sort(key=lambda r: (_backup_recording_ts(r["path"], r["ts"]), float(r["ts"] or 0)))
+        tracked_used = sum(int(r["size"] or 0) for r in rows)
+        max_bytes = max_gb * (1024 ** 3) if max_gb > 0 else 0
+        min_free_bytes = min_free_gb * (1024 ** 3) if min_free_gb > 0 else 0
+        locked = locked_paths()
+        deleted = 0
+        freed = 0
+        for row in rows:
+            if deleted >= 300:
+                break
+            rel = row["path"]
+            if rel in locked:
+                continue
+            uploaded_ts = float(row["ts"] or 0)
+            if now - uploaded_ts < 120:
+                continue
+            rec_ts = _backup_recording_ts(rel, uploaded_ts)
+            age_days = max(0.0, (now - rec_ts) / 86400.0) if rec_ts else 0.0
+            over_days = retention_days > 0 and age_days > retention_days
+            over_gb = max_bytes > 0 and tracked_used > max_bytes
+            low_free = min_free_bytes > 0 and total > 0 and free < min_free_bytes
+            if not (over_days or over_gb or low_free):
+                break
+            try:
+                day, cam, fn = _backup_dest_parts(rel, uploaded_ts)
+                target.remove(target.path(day, cam, fn))
+            except Exception as e:
+                log_event("warn", f"SMB cleanup không xoá được {rel}: {mask_secrets(str(e))}")
+                continue
+            size = int(row["size"] or 0)
+            conn.execute("UPDATE backup_done SET deleted=1, deleted_ts=? WHERE path=?", (now, rel))
+            tracked_used = max(0, tracked_used - size)
+            if total:
+                free = min(total, free + size)
+            else:
+                free += size
+            deleted += 1
+            freed += size
+        conn.commit()
+        result = {
+            "deleted": deleted,
+            "freed": freed,
+            "reason": "cleaned" if deleted else "ok",
+            "total": total,
+            "free": free,
+            "used": tracked_used,
+        }
+        _smb_cleanup_state["last_cleanup"] = now
+        _smb_cleanup_state["last_result"] = result
+        return result
+    finally:
+        if own_target and target:
+            target.close()
+
+
 def backup_worker():
     while not _shutdown.is_set():
         try:
             cfg = _backup_cfg()
+            kind = str(cfg.get("kind") or "folder")
+            cleanup_due = (
+                bool(cfg.get("enabled")) and kind == "smb"
+                and bool(cfg.get("smb_cleanup_enabled"))
+                and time.time() - float(_smb_cleanup_state.get("last_cleanup") or 0) >= 600
+            )
             if cfg.get("enabled") and (cfg.get("folder_path") or cfg.get("ftp_host") or cfg.get("smb_host")):
                 files = backup_scan()
                 ftp = None
                 smb = None
-                if cfg.get("kind") == "ftp" and files:
+                if kind == "ftp" and files:
                     try:
                         ftp = _ftp_connect(cfg)
                     except Exception as e:
                         log_event("warn", f"Backup FTP kết nối lỗi: {mask_secrets(str(e))}")
                         files = []
-                elif cfg.get("kind") == "smb" and files:
+                elif kind == "smb" and (files or cleanup_due):
                     try:
                         smb = SmbTarget(cfg)
                     except Exception as e:
                         log_event("warn", f"Backup SMB kết nối lỗi: {mask_secrets(str(e))}")
                         files = []
+                        cleanup_due = False
                 fail_streak = 0
                 for rel in files[:50]:
                     if _shutdown.is_set():
@@ -5092,6 +5253,11 @@ def backup_worker():
                         fail_streak += 1
                         if fail_streak >= 3:
                             break  # lỗi hệ thống (kết nối/quyền), tránh spam cả batch
+                if smb and cleanup_due:
+                    try:
+                        smb_cleanup(force=False, target=smb)
+                    except Exception as e:
+                        log_event("warn", f"SMB cleanup: {mask_secrets(str(e))}")
                 if ftp:
                     try:
                         ftp.quit()
@@ -5108,9 +5274,15 @@ def backup_worker():
 def get_backup_settings():
     b = _backup_cfg()
     try:
-        done = db_conn().execute("SELECT COUNT(*), COALESCE(SUM(size),0) FROM backup_done").fetchone()
+        done = db_conn().execute(
+            "SELECT COUNT(*), COALESCE(SUM(size),0) FROM backup_done "
+            "WHERE COALESCE(deleted, 0)=0").fetchone()
+        smb_done = db_conn().execute(
+            "SELECT COUNT(*), COALESCE(SUM(size),0) FROM backup_done "
+            "WHERE dest='smb' AND COALESCE(deleted, 0)=0").fetchone()
     except Exception:
         done = (0, 0)
+        smb_done = (0, 0)
     return {
         "enabled": bool(b.get("enabled")),
         "kind": b.get("kind", "folder"),
@@ -5122,6 +5294,12 @@ def get_backup_settings():
         "smb_share": b.get("smb_share", ""), "smb_user": b.get("smb_user", ""),
         "has_smb_pass": bool((b.get("smb_pass") or "").strip()),
         "smb_domain": b.get("smb_domain", ""), "smb_dir": b.get("smb_dir", ""),
+        "smb_cleanup_enabled": bool(b.get("smb_cleanup_enabled")),
+        "smb_retention_days": float(b.get("smb_retention_days") or 0),
+        "smb_max_gb": float(b.get("smb_max_gb") or 0),
+        "smb_min_free_gb": float(b.get("smb_min_free_gb") or 0),
+        "smb_backup_count": smb_done[0], "smb_backup_bytes": smb_done[1],
+        "smb_last_cleanup": float(_smb_cleanup_state.get("last_cleanup") or 0),
         "mode": b.get("mode", "copy"),
         "cameras": b.get("cameras", []),
         "since_ts": float(b.get("since_ts", 0) or 0),
@@ -5151,6 +5329,10 @@ def update_backup_settings(settings: BackupSettings):
         b["smb_pass"] = settings.smb_pass.strip()
     b["smb_domain"] = settings.smb_domain.strip()
     b["smb_dir"] = settings.smb_dir.strip()
+    b["smb_cleanup_enabled"] = bool(settings.smb_cleanup_enabled)
+    b["smb_retention_days"] = max(0.0, float(settings.smb_retention_days or 0))
+    b["smb_max_gb"] = max(0.0, float(settings.smb_max_gb or 0))
+    b["smb_min_free_gb"] = max(0.0, float(settings.smb_min_free_gb or 0))
     b["mode"] = settings.mode if settings.mode in ("copy", "move") else "copy"
     b["cameras"] = [str(x) for x in (settings.cameras or []) if str(x)]
     b["since_ts"] = float(settings.since_ts or 0)
@@ -5196,13 +5378,46 @@ def test_backup_destination():
         try:
             smb = SmbTarget(cfg)
             smb.probe()
+            space = smb.stat_volume()
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"Không ghi được vào SMB: {mask_secrets(str(e))}")
         finally:
             if smb:
                 smb.close()
-        return {"status": "ok", "results": {"smb": "ok"}}
+        return {"status": "ok", "results": {"smb": "ok"}, "smb_space": space}
     raise HTTPException(status_code=400, detail="Kiểu sao lưu không hợp lệ")
+
+
+@app.get("/api/backup/smb/space")
+def get_smb_space():
+    cfg = _backup_cfg()
+    if str(cfg.get("kind") or "") != "smb":
+        raise HTTPException(status_code=400, detail="Chưa chọn kiểu lưu trữ SMB")
+    if not (cfg.get("smb_host") or "").strip() or not (cfg.get("smb_share") or "").strip():
+        raise HTTPException(status_code=400, detail="Chưa nhập máy chủ hoặc share SMB")
+    smb = None
+    try:
+        smb = SmbTarget(cfg)
+        return {"status": "ok", **smb.stat_volume()}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Không đọc được dung lượng SMB: {mask_secrets(str(e))}")
+    finally:
+        if smb:
+            smb.close()
+
+
+@app.post("/api/backup/smb/cleanup")
+def cleanup_smb_now():
+    cfg = _backup_cfg()
+    if str(cfg.get("kind") or "") != "smb":
+        raise HTTPException(status_code=400, detail="Chưa chọn kiểu lưu trữ SMB")
+    if not (cfg.get("smb_host") or "").strip() or not (cfg.get("smb_share") or "").strip():
+        raise HTTPException(status_code=400, detail="Chưa nhập máy chủ hoặc share SMB")
+    try:
+        result = smb_cleanup(force=True)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Không dọn được SMB: {mask_secrets(str(e))}")
+    return {"status": "ok", **result}
 
 
 # ---------------- Sao lưu Google Drive (24/7) ----------------
@@ -6968,6 +7183,11 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.get("/api/version")
+def get_version():
+    return {"name": "LiteNVR Pro", "version": APP_VERSION}
 
 @app.get("/")
 def index():

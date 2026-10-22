@@ -26,6 +26,9 @@ RUN pip install --no-cache-dir \
 
 COPY app/ /app/
 
+ARG LITENVR_VERSION=1.9.6
+ENV LITENVR_VERSION=${LITENVR_VERSION}
+
 EXPOSE 8080 8556/tcp 8556/udp
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \

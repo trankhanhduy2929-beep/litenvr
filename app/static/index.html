@@ -212,6 +212,19 @@
       color: var(--accent-red);
     }
 
+    .version-badge {
+      margin-left: 5px;
+      padding: 2px 6px;
+      border: 1px solid var(--border-subtle);
+      border-radius: 999px;
+      background: var(--glass-hi);
+      color: var(--text-dim);
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+      font-variant-numeric: tabular-nums;
+    }
+
     .tb-main {
       display: flex;
       gap: 8px;
@@ -959,6 +972,67 @@
 
     .bar.crit > i {
       background: linear-gradient(90deg, #ef4444, #f87171);
+    }
+
+    .smb-space {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      margin: 4px 0 12px;
+      padding: 10px 12px;
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-sm);
+      background: var(--bg-elevated);
+    }
+
+    .smb-space-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+
+    .smb-space-head strong {
+      font-size: 12.5px;
+    }
+
+    .smb-space-head button {
+      flex: none;
+      padding: 4px 9px;
+      font-size: 11.5px;
+    }
+
+    .smb-space-value {
+      color: var(--text-main);
+      font-size: 13px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .smb-space-sub {
+      color: var(--text-muted);
+      font-size: 11.5px;
+      line-height: 1.4;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .smb-cleanup-fields {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+      margin: 10px 0 8px;
+    }
+
+    .smb-cleanup-fields.is-off {
+      opacity: 0.55;
+    }
+
+    .smb-cleanup-fields .form-row {
+      margin-bottom: 0;
+    }
+
+    .smb-cleanup-fields input {
+      width: 100%;
+      min-width: 0;
     }
 
     /* ================= CAMERA THUMBNAIL STRIP ================= */
@@ -2292,6 +2366,7 @@
       }
       input, select, textarea, button { font-size: 16px; }
       .grid-2 { grid-template-columns: 1fr; }
+      .smb-cleanup-fields { grid-template-columns: 1fr; }
       .onvif-scan-row input { flex-basis: 100%; max-width: none; }
       .onvif-addrow input, .onvif-addrow button { flex-basis: 100%; }
       .onvif-item { align-items: flex-start; }
@@ -2386,7 +2461,7 @@
     })();
   </script>
   <header class="topbar">
-    <div class="brand">Lite<span>NVR</span> Pro</div>
+    <div class="brand">Lite<span>NVR</span> Pro <small class="version-badge" id="appVersion" title="Phiên bản LiteNVR">v…</small></div>
     <button id="btnMenu" class="btn-menu" onclick="toggleMenu()" aria-label="Mở menu" aria-expanded="false">☰</button>
     <div class="tb-main" id="tbMain">
       <select id="camSelect" aria-label="Chọn camera"></select>
@@ -3287,6 +3362,30 @@
           <div class="form-row"><label>Thư mục con trên share:</label><input id="bkSmbDir" placeholder="LiteNVR"></div>
         </div>
         <div class="form-row"><label>Cổng SMB:</label><input type="number" id="bkSmbPort" min="1" max="65535" value="445"></div>
+        <div class="smb-space">
+          <div class="smb-space-head">
+            <strong>Dung lượng share SMB</strong>
+            <button type="button" id="bkSmbSpaceBtn" onclick="refreshSmbSpace()">↻ Kiểm tra</button>
+          </div>
+          <div class="smb-space-value" id="bkSmbSpace" role="status" aria-live="polite">Chưa kiểm tra</div>
+          <div class="bar" id="bkSmbSpaceBar" hidden aria-hidden="true"><i></i></div>
+          <div class="smb-space-sub" id="bkSmbSpaceSub">Bấm Kiểm tra để đọc dung lượng còn trống của share đã lưu.</div>
+        </div>
+        <div class="adv-section" style="margin:0 0 12px;">
+          <label class="log-chk" style="font-size:13px;">
+            <input type="checkbox" id="bkSmbCleanup" onchange="bkToggleSmbCleanup()"> Tự động xóa bản ghi cũ trên SMB
+          </label>
+          <div class="smb-cleanup-fields is-off" id="bkSmbCleanupFields">
+            <div class="form-row"><label for="bkSmbRetDays">Giữ tối đa (ngày)</label><input type="number" id="bkSmbRetDays" min="0" max="3650" step="1" value="0" disabled></div>
+            <div class="form-row"><label for="bkSmbMaxGb">Tối đa (GB)</label><input type="number" id="bkSmbMaxGb" min="0" step="1" value="0" disabled></div>
+            <div class="form-row"><label for="bkSmbMinFreeGb">Giữ trống tối thiểu (GB)</label><input type="number" id="bkSmbMinFreeGb" min="0" step="1" value="2" disabled></div>
+          </div>
+          <div class="smb-space-sub" style="margin-bottom:8px;">Nhập 0 để tắt từng giới hạn. LiteNVR chỉ xóa bản ghi do chính nó đã sao lưu, không xóa file khác trên share.</div>
+          <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+            <button type="button" class="warn" onclick="cleanSmbNow()">🧹 Dọn SMB ngay</button>
+            <span id="bkSmbCleanupMsg" class="smb-space-sub" role="status" aria-live="polite"></span>
+          </div>
+        </div>
       </div>
       <div id="bkFolderBox" style="display:none;">
         <div class="form-row">
@@ -3648,6 +3747,19 @@
     async function loadSystem() {
       const res = await fetch("api/system");
       sysInfo = await res.json();
+    }
+
+    async function loadAppVersion() {
+      try {
+        const r = await fetch("api/version");
+        if (!r.ok) return;
+        const d = await r.json();
+        if (!d.version) return;
+        const el = document.getElementById("appVersion");
+        el.textContent = "v" + d.version;
+        el.title = "Phiên bản LiteNVR " + d.version;
+        el.setAttribute("aria-label", "Phiên bản LiteNVR " + d.version);
+      } catch (e) {}
     }
 
     // ---- Giám sát tài nguyên + biểu đồ ----
@@ -4083,6 +4195,7 @@
     }
 
     async function init() {
+      loadAppVersion();
       if (isAdmin()) await loadSystem();
       await refreshCameras();
       if (Object.keys(cameras).length === 0) {
@@ -6490,6 +6603,60 @@
       document.getElementById("bkFolderBox").style.display = k === "folder" ? "block" : "none";
       document.getElementById("bkFtpBox").style.display = k === "ftp" ? "block" : "none";
     }
+    function bkToggleSmbCleanup() {
+      const on = document.getElementById("bkSmbCleanup").checked;
+      const box = document.getElementById("bkSmbCleanupFields");
+      box.classList.toggle("is-off", !on);
+      box.querySelectorAll("input").forEach(el => { el.disabled = !on; });
+    }
+    function resetSmbSpace() {
+      const value = document.getElementById("bkSmbSpace");
+      const sub = document.getElementById("bkSmbSpaceSub");
+      const bar = document.getElementById("bkSmbSpaceBar");
+      value.style.color = "var(--text-main)";
+      value.textContent = "Chưa kiểm tra";
+      sub.textContent = "Bấm Kiểm tra để đọc dung lượng còn trống của share đã lưu.";
+      bar.hidden = true;
+      bar.classList.remove("warn", "crit");
+      bar.querySelector("i").style.width = "0%";
+    }
+    async function refreshSmbSpace() {
+      const value = document.getElementById("bkSmbSpace");
+      const sub = document.getElementById("bkSmbSpaceSub");
+      const bar = document.getElementById("bkSmbSpaceBar");
+      const btn = document.getElementById("bkSmbSpaceBtn");
+      value.style.color = "var(--text-muted)";
+      value.textContent = "⏳ Đang đọc dung lượng...";
+      btn.disabled = true;
+      const oldLabel = btn.textContent;
+      btn.textContent = "Đang đọc...";
+      try {
+        const r = await fetch("api/backup/smb/space");
+        let d = {};
+        try { d = await r.json(); } catch (e) {}
+        if (!r.ok) throw new Error(d.detail || ("HTTP " + r.status));
+        const total = Number(d.total || 0);
+        const free = Number(d.free || 0);
+        const used = Math.max(0, total - free);
+        if (!total && !free) throw new Error("Máy chủ không trả về dung lượng share");
+        value.style.color = "var(--text-main)";
+        value.textContent = `Còn trống ${drvFmtBytes(free)} / ${drvFmtBytes(total)}`;
+        const pct = total ? Math.min(100, Math.max(0, (used / total) * 100)) : 0;
+        bar.hidden = false;
+        bar.classList.toggle("warn", pct >= 85 && pct < 95);
+        bar.classList.toggle("crit", pct >= 95);
+        bar.querySelector("i").style.width = pct.toFixed(1) + "%";
+        sub.textContent = `Đã dùng ${drvFmtBytes(used)} (${pct.toFixed(1)}%) · cập nhật ${new Date().toLocaleTimeString()}`;
+      } catch (e) {
+        value.style.color = "var(--err-text)";
+        value.textContent = "❌ " + e.message;
+        sub.textContent = "Kiểm tra máy chủ/share/tài khoản SMB rồi thử lại.";
+        bar.hidden = true;
+      } finally {
+        btn.disabled = false;
+        btn.textContent = oldLabel;
+      }
+    }
     async function openBackupModal() {
       const cfg = await fetch("api/backup").then(r => r.json());
       document.getElementById("bkEnabled").checked = !!cfg.enabled;
@@ -6501,6 +6668,11 @@
       document.getElementById("bkSmbPass").value = "";
       document.getElementById("bkSmbDomain").value = cfg.smb_domain || "";
       document.getElementById("bkSmbDir").value = cfg.smb_dir || "";
+      document.getElementById("bkSmbCleanup").checked = !!cfg.smb_cleanup_enabled;
+      document.getElementById("bkSmbRetDays").value = cfg.smb_retention_days || 0;
+      document.getElementById("bkSmbMaxGb").value = cfg.smb_max_gb || 0;
+      document.getElementById("bkSmbMinFreeGb").value = cfg.smb_min_free_gb || 0;
+      document.getElementById("bkSmbCleanupMsg").textContent = "";
       document.getElementById("bkFolderPath").value = cfg.folder_path || "";
       document.getElementById("bkFtpHost").value = cfg.ftp_host || "";
       document.getElementById("bkFtpPort").value = cfg.ftp_port || 21;
@@ -6512,7 +6684,9 @@
       document.getElementById("bkCameras").value = (cfg.cameras || []).join(", ");
       document.getElementById("bkStatus").textContent =
         `Đã chuyển ${cfg.done_count || 0} bản ghi (${drvFmtBytes(cfg.done_bytes || 0)}) · còn chờ ${cfg.pending || 0}`;
+      resetSmbSpace();
       bkToggleKind();
+      bkToggleSmbCleanup();
       document.getElementById("backupModal").classList.add("open");
     }
     function closeBackupModal() { document.getElementById("backupModal").classList.remove("open"); }
@@ -6529,6 +6703,10 @@
         smb_pass: document.getElementById("bkSmbPass").value,
         smb_domain: document.getElementById("bkSmbDomain").value.trim(),
         smb_dir: document.getElementById("bkSmbDir").value.trim(),
+        smb_cleanup_enabled: document.getElementById("bkSmbCleanup").checked,
+        smb_retention_days: parseFloat(document.getElementById("bkSmbRetDays").value) || 0,
+        smb_max_gb: parseFloat(document.getElementById("bkSmbMaxGb").value) || 0,
+        smb_min_free_gb: parseFloat(document.getElementById("bkSmbMinFreeGb").value) || 0,
         folder_path: document.getElementById("bkFolderPath").value.trim(),
         ftp_host: document.getElementById("bkFtpHost").value.trim(),
         ftp_port: parseInt(document.getElementById("bkFtpPort").value, 10) || 21,
@@ -6546,6 +6724,8 @@
       const st = document.getElementById("bkStatus");
       st.style.color = r.ok ? "var(--ok-text)" : "var(--err-text)";
       st.textContent = r.ok ? "✔ Đã lưu cấu hình sao lưu." : "❌ Lưu lỗi.";
+      if (r.ok && document.getElementById("bkKind").value === "smb") refreshSmbSpace();
+      return r.ok;
     }
     async function testBackup() {
       const st = document.getElementById("bkStatus");
@@ -6558,9 +6738,37 @@
         const d = await r.json();
         st.style.color = r.ok ? "var(--ok-text)" : "var(--err-text)";
         st.textContent = r.ok ? "✔ Đích OK: " + JSON.stringify(d.results) : "❌ " + (d.detail || r.status);
+        if (r.ok && document.getElementById("bkKind").value === "smb") refreshSmbSpace();
       } catch (e) {
         st.style.color = "var(--err-text)";
         st.textContent = "❌ " + e;
+      }
+    }
+    async function cleanSmbNow() {
+      const msg = document.getElementById("bkSmbCleanupMsg");
+      if (!confirm("Dọn bản ghi LiteNVR cũ trên SMB theo giới hạn trong form? Cấu hình sẽ được lưu trước khi dọn; file khác trên share không bị xóa.")) return;
+      msg.style.color = "var(--text-muted)";
+      msg.textContent = "⏳ Đang lưu cấu hình...";
+      const saved = await saveBackup();
+      if (!saved) {
+        msg.style.color = "var(--err-text)";
+        msg.textContent = "❌ Chưa lưu được cấu hình.";
+        return;
+      }
+      msg.textContent = "⏳ Đang dọn SMB...";
+      try {
+        const r = await fetch("api/backup/smb/cleanup", { method: "POST" });
+        let d = {};
+        try { d = await r.json(); } catch (e) {}
+        if (!r.ok) throw new Error(d.detail || ("HTTP " + r.status));
+        msg.style.color = d.deleted ? "var(--ok-text)" : "var(--text-muted)";
+        msg.textContent = d.deleted
+          ? `✔ Đã xóa ${d.deleted} bản ghi, giải phóng ${drvFmtBytes(d.freed || 0)}.`
+          : "Không có bản ghi nào cần xóa.";
+        await refreshSmbSpace();
+      } catch (e) {
+        msg.style.color = "var(--err-text)";
+        msg.textContent = "❌ " + e.message;
       }
     }
 

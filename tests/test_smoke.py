@@ -76,6 +76,14 @@ class ApiTests(_AppCase):
         self.assertEqual(self.client.get("/api/system", headers=auth("user1", "wrong")).status_code, 401)
         self.assertEqual(self.client.get("/api/system", headers=auth()).status_code, 200)
         self.assertEqual(self.client.get("/").status_code, 401)
+        self.assertEqual(self.client.get("/api/version").status_code, 401)
+
+    def test_version_endpoint(self):
+        j = self.client.get("/api/version", headers=auth()).json()
+        self.assertEqual(j["version"], self.m.APP_VERSION)
+        self.assertEqual(j["name"], "LiteNVR Pro")
+        sysinfo = self.client.get("/api/system", headers=auth()).json()
+        self.assertEqual(sysinfo["version"], self.m.APP_VERSION)
 
     def test_camera_lifecycle(self):
         payload = {"cam_id": "cam1", "name": "Cam", "brand": "custom",
@@ -433,6 +441,10 @@ class ApiTests(_AppCase):
                                                   "smb_host": "nas.local", "smb_share": "Camera",
                                                   "smb_user": "nvr", "smb_pass": "secret",
                                                   "smb_dir": "LiteNVR", "mode": "move",
+                                                  "smb_cleanup_enabled": True,
+                                                  "smb_retention_days": 14,
+                                                  "smb_max_gb": 250,
+                                                  "smb_min_free_gb": 5,
                                                   "cameras": ["cam1"]}, headers=auth())
         self.assertEqual(r.status_code, 200)
         j = self.client.get("/api/backup", headers=auth()).json()
@@ -441,6 +453,10 @@ class ApiTests(_AppCase):
         self.assertEqual(j["smb_host"], "nas.local")
         self.assertEqual(j["smb_share"], "Camera")
         self.assertTrue(j["has_smb_pass"])
+        self.assertTrue(j["smb_cleanup_enabled"])
+        self.assertEqual(j["smb_retention_days"], 14)
+        self.assertEqual(j["smb_max_gb"], 250)
+        self.assertEqual(j["smb_min_free_gb"], 5)
         self.assertEqual(j["mode"], "move")
         self.assertEqual(j["cameras"], ["cam1"])
         self.client.post("/api/backup", json={"enabled": False}, headers=auth())
@@ -1193,6 +1209,88 @@ class BuilderTests(unittest.TestCase):
         target._base = "LiteNVR"
         self.assertEqual(target.path("2026-10-21", "cam1", "a.mp4"),
                          "\\\\nas.local\\Camera\\LiteNVR\\2026-10-21\\cam1\\a.mp4")
+
+    def test_smb_stat_volume_uses_share(self):
+        m = self.m
+
+        class Client:
+            def __init__(self):
+                self.paths = []
+
+            def stat_volume(self, path):
+                self.paths.append(path)
+                return type("Vol", (), {
+                    "total_size": 10_000,
+                    "actual_available_size": 4_000,
+                    "caller_available_size": 3_000,
+                })()
+
+        target = object.__new__(m.SmbTarget)
+        target._client = Client()
+        target._host = "nas.local"
+        target._share = "Camera"
+        target._base = "LiteNVR"
+        vol = target.stat_volume()
+        self.assertEqual(target._client.paths, ["\\\\nas.local\\Camera\\LiteNVR"])
+        self.assertEqual(vol["total"], 10_000)
+        self.assertEqual(vol["free"], 4_000)
+        self.assertEqual(vol["used"], 6_000)
+
+    def test_smb_cleanup_only_tracked_backups(self):
+        m = self.m
+        saved_backup = m.CONFIG.get("backup")
+        conn = m.db_conn()
+        old = time.time() - 10 * 86400
+        p_ok = "cleanA/2020-01-01_00-00-00.mp4"
+        p_lock = "cleanB/2020-01-02_00-00-00.mp4"
+
+        class FakeSmb:
+            def __init__(self):
+                self.removed = []
+
+            def path(self, *parts):
+                return "\\\\nas\\Camera\\" + "\\".join(str(p) for p in parts if p)
+
+            def stat_volume(self):
+                return {"total": 100 * 1024 ** 3, "free": 0, "used": 100 * 1024 ** 3}
+
+            def remove(self, path):
+                self.removed.append(path)
+
+            def close(self):
+                pass
+
+        try:
+            conn.execute("DELETE FROM backup_done WHERE path IN (?,?)", (p_ok, p_lock))
+            conn.execute("DELETE FROM locks WHERE path IN (?,?)", (p_ok, p_lock))
+            conn.execute(
+                "INSERT OR REPLACE INTO backup_done (path, cam_id, size, ts, dest, deleted, deleted_ts) "
+                "VALUES (?,?,?,?,'smb',0,NULL)", (p_ok, "cleanA", 10, old))
+            conn.execute(
+                "INSERT OR REPLACE INTO backup_done (path, cam_id, size, ts, dest, deleted, deleted_ts) "
+                "VALUES (?,?,?,?,'smb',0,NULL)", (p_lock, "cleanB", 10, old))
+            conn.execute("INSERT OR REPLACE INTO locks (path, cam_id, created, note) VALUES (?,?,?,?)",
+                         (p_lock, "cleanB", int(old), "giữ"))
+            conn.commit()
+            m.CONFIG["backup"] = {
+                "enabled": True, "kind": "smb", "smb_host": "nas.local", "smb_share": "Camera",
+                "smb_cleanup_enabled": True, "smb_retention_days": 0,
+                "smb_max_gb": 0, "smb_min_free_gb": 1,
+            }
+            fake = FakeSmb()
+            res = m.smb_cleanup(force=True, target=fake)
+            self.assertEqual(res["deleted"], 1)
+            self.assertEqual(fake.removed,
+                             ["\\\\nas\\Camera\\2020-01-01\\cleanA\\2020-01-01_00-00-00.mp4"])
+            rows = {r["path"]: r for r in conn.execute(
+                "SELECT path, deleted FROM backup_done WHERE path IN (?,?)", (p_ok, p_lock)).fetchall()}
+            self.assertEqual(rows[p_ok]["deleted"], 1)
+            self.assertEqual(rows[p_lock]["deleted"], 0)
+        finally:
+            conn.execute("DELETE FROM backup_done WHERE path IN (?,?)", (p_ok, p_lock))
+            conn.execute("DELETE FROM locks WHERE path IN (?,?)", (p_ok, p_lock))
+            conn.commit()
+            m.CONFIG["backup"] = saved_backup or {}
 
     def test_drive_upload_folder_groups_by_day(self):
         m = self.m
