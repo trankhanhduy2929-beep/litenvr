@@ -1,5 +1,6 @@
 import base64
 import importlib.util
+import io
 import os
 import re
 import shutil
@@ -578,8 +579,12 @@ class ApiTests(_AppCase):
         self.client.delete("/api/cameras/camThumb", headers=auth())
 
     def test_thumbnail_generation(self):
-        if subprocess.call(["ffmpeg", "-version"], stdout=subprocess.DEVNULL,
-                           stderr=subprocess.DEVNULL) != 0:
+        try:
+            ffmpeg_ok = subprocess.call(["ffmpeg", "-version"], stdout=subprocess.DEVNULL,
+                                        stderr=subprocess.DEVNULL) == 0
+        except OSError:
+            ffmpeg_ok = False
+        if not ffmpeg_ok:
             self.skipTest("ffmpeg không có sẵn")
         self.client.post("/api/cameras", json={"cam_id": "camThumb2", "name": "T2", "rtsp_url": "rtsp://x"},
                          headers=auth())
@@ -1350,7 +1355,8 @@ class BuilderTests(unittest.TestCase):
         client.__enter__()
         try:
             m.CONFIG["cameras"] = {}
-            m.CONFIG["backup"] = {"enabled": False, "kind": "smb", "cameras": []}
+            m.CONFIG["backup"] = {"enabled": False, "kind": "smb",
+                                  "cameras": ["camS1", "camS2"], "cameras_explicit": True}
             base = {"brand": "custom", "rtsp_url": "rtsp://127.0.0.1:1/x",
                     "record_mode": "off"}
             client.post("/api/cameras", json={**base, "cam_id": "camS1", "name": "S1"},
@@ -1369,8 +1375,115 @@ class BuilderTests(unittest.TestCase):
                         json={**base, "cam_id": "camS2", "name": "S2", "storage_smb": False},
                         headers=auth())
             self.assertEqual(m.CONFIG["backup"]["cameras"], [])
+            self.assertTrue(m.CONFIG["backup"]["cameras_explicit"])
+            cams = client.get("/api/cameras", headers=auth()).json()
+            self.assertFalse(cams["camS1"]["storage_smb"])
+            self.assertFalse(cams["camS2"]["storage_smb"])
         finally:
             client.__exit__(None, None, None)
+            m.CONFIG["cameras"] = saved_cams or {}
+            m.CONFIG["backup"] = saved_backup or {}
+
+    def test_backup_flag_off_does_not_seed_unconfigured_destinations(self):
+        m = self.m
+        saved_cams = m.CONFIG.get("cameras")
+        saved_backup = m.CONFIG.get("backup")
+        from fastapi.testclient import TestClient
+        client = TestClient(m.app)
+        client.__enter__()
+        try:
+            m.CONFIG["cameras"] = {}
+            base = {"brand": "custom", "rtsp_url": "rtsp://127.0.0.1:1/x",
+                    "record_mode": "off"}
+            client.post("/api/cameras", json={**base, "cam_id": "camOff1", "name": "Off 1"},
+                        headers=auth())
+            client.post("/api/cameras", json={**base, "cam_id": "camOff2", "name": "Off 2"},
+                        headers=auth())
+            m.CONFIG["backup"] = {"enabled": False, "kind": "smb", "smb_host": "",
+                                  "smb_share": "", "cameras": [], "cameras_explicit": False}
+            r = client.post("/api/cameras",
+                            json={**base, "cam_id": "camOff1", "name": "Off 1",
+                                  "storage_smb": False},
+                            headers=auth())
+            self.assertEqual(r.status_code, 200)
+            self.assertEqual(m.CONFIG["backup"]["cameras"], [])
+            self.assertTrue(m.CONFIG["backup"]["cameras_explicit"])
+        finally:
+            client.__exit__(None, None, None)
+            m.CONFIG["cameras"] = saved_cams or {}
+            m.CONFIG["backup"] = saved_backup or {}
+
+    def test_storage_selection_defaults_off_when_unconfigured(self):
+        m = self.m
+        cfg = m._normalize_config({
+            "cameras": {"c1": {}, "c2": {}},
+            "backup": {"enabled": False, "kind": "smb", "cameras": []},
+        })
+        self.assertEqual(cfg["backup"]["cameras"], [])
+        self.assertTrue(cfg["backup"]["cameras_explicit"])
+
+        active = m._normalize_config({
+            "cameras": {"c1": {}, "c2": {}},
+            "backup": {"enabled": True, "kind": "smb", "smb_host": "nas",
+                       "smb_share": "media", "cameras": []},
+        })
+        self.assertEqual(active["backup"]["cameras"], ["c1", "c2"])
+
+        folder = m._normalize_config({
+            "cameras": {"c1": {}, "c2": {}},
+            "backup": {"enabled": True, "kind": "folder", "folder_path": "/backup",
+                       "cameras": []},
+        })
+        self.assertEqual(folder["backup"]["cameras"], ["c1", "c2"])
+
+        explicit = m._normalize_config({
+            "cameras": {"c1": {}},
+            "backup": {"enabled": True, "kind": "smb", "smb_host": "nas",
+                       "smb_share": "media", "cameras": [], "cameras_explicit": True},
+        })
+        self.assertEqual(explicit["backup"]["cameras"], [])
+
+    def test_storage_readiness_requires_enabled_service(self):
+        m = self.m
+        saved_backup = m.CONFIG.get("backup")
+        saved_gdrive = m.CONFIG.get("gdrive")
+        try:
+            m.CONFIG["backup"] = {"enabled": False, "kind": "smb", "smb_host": "nas",
+                                  "smb_share": "media", "cameras": [], "cameras_explicit": True}
+            self.assertFalse(m._smb_storage_ready())
+            m.CONFIG["backup"]["enabled"] = True
+            self.assertTrue(m._smb_storage_ready())
+
+            m.CONFIG["gdrive"] = {"enabled": False, "client_id": "id", "client_secret": "secret",
+                                  "refresh_token": "refresh"}
+            self.assertFalse(m._drive_storage_ready())
+            m.CONFIG["gdrive"]["enabled"] = True
+            self.assertTrue(m._drive_storage_ready())
+        finally:
+            m.CONFIG["backup"] = saved_backup or {}
+            m.CONFIG["gdrive"] = saved_gdrive or {}
+
+    def test_backup_scan_skips_all_when_selection_is_explicitly_empty(self):
+        m = self.m
+        cam = "camExplicit"
+        rec = os.path.join(m.RECORDINGS_DIR, cam)
+        os.makedirs(rec, exist_ok=True)
+        fname = "2026-01-01_00-00-00.mp4"
+        fpath = os.path.join(rec, fname)
+        with open(fpath, "wb") as f:
+            f.write(b"video")
+        old = time.time() - 3600
+        os.utime(fpath, (old, old))
+        saved_cams = m.CONFIG.get("cameras")
+        saved_backup = m.CONFIG.get("backup")
+        try:
+            m.CONFIG.setdefault("cameras", {})[cam] = {"name": cam}
+            m.CONFIG["backup"] = {"enabled": True, "kind": "folder", "cameras": [],
+                                  "cameras_explicit": True}
+            self.assertNotIn(f"{cam}/{fname}", m.backup_scan())
+            m.CONFIG["backup"]["cameras_explicit"] = False
+            self.assertIn(f"{cam}/{fname}", m.backup_scan())
+        finally:
             m.CONFIG["cameras"] = saved_cams or {}
             m.CONFIG["backup"] = saved_backup or {}
 
@@ -1673,6 +1786,160 @@ class DrivePlaybackTests(unittest.TestCase):
         while time.time() < deadline and not os.path.isfile(self.path):
             time.sleep(0.02)
         self.assertTrue(os.path.isfile(self.path))
+
+
+class PlaybackAutoTests(_AppCase):
+    def _camera_file(self, cam, fname, data=b"fake-mp4"):
+        self.client.post("/api/cameras", json={
+            "cam_id": cam, "name": cam, "rtsp_url": "rtsp://127.0.0.1:1/x",
+            "record_mode": "off", "video_codec": "copy"}, headers=auth())
+        rec = os.path.join(self.m.RECORDINGS_DIR, cam)
+        os.makedirs(rec, exist_ok=True)
+        path = os.path.join(rec, fname)
+        with open(path, "wb") as f:
+            f.write(data)
+        return path
+
+    def tearDown(self):
+        for cam in ("autoH264", "autoHEVC", "auto10bit", "autoSMB"):
+            self.client.delete(f"/api/cameras/{cam}", headers=auth())
+        shutil.rmtree(self.m.PLAYBACK_CACHE_DIR, ignore_errors=True)
+
+    def test_h264_browser_safety_rejects_unsupported_profiles(self):
+        safe = self.m._is_browser_safe_h264
+        self.assertTrue(safe("h264", "yuv420p", "Main"))
+        self.assertTrue(safe("h264", "yuvj420p", "High"))
+        self.assertFalse(safe("h264", "yuv420p10le", "High 10"))
+        self.assertFalse(safe("h264", "yuv422p", "High 4:2:2"))
+        self.assertFalse(safe("h264", "yuv444p", "High 4:4:4 Predictive"))
+        self.assertFalse(safe("hevc", "yuv420p", "Main"))
+
+    def test_recording_decision_uses_video_and_audio_codec(self):
+        with mock.patch.object(self.m, "_probe_recording", return_value={
+                "video_codec": "h264", "video_profile": "High",
+                "video_pix_fmt": "yuv420p", "audio_codec": "aac"}):
+            self.assertFalse(self.m._recording_needs_transcode("/x.mp4"))
+        with mock.patch.object(self.m, "_probe_recording", return_value={
+                "video_codec": "h264", "video_profile": "High",
+                "video_pix_fmt": "yuv420p", "audio_codec": "opus"}):
+            self.assertTrue(self.m._recording_needs_transcode("/x.mp4"))
+        with mock.patch.object(self.m, "_probe_recording", return_value={}):
+            self.assertTrue(self.m._recording_needs_transcode("/x.mp4"))
+
+    def test_auto_play_direct_for_browser_safe_h264(self):
+        cam = "autoH264"
+        fname = "2026-07-01_08-00-00.mp4"
+        self._camera_file(cam, fname)
+        info = {"video_codec": "h264", "video_profile": "High",
+                "video_pix_fmt": "yuv420p", "audio_codec": "aac"}
+        with mock.patch.object(self.m, "_probe_recording", return_value=info):
+            r = self.client.get(f"/api/play/{cam}/{fname}?t=2&ss=12",
+                                headers=auth(), follow_redirects=False)
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.content, b"fake-mp4")
+
+    def test_playback_info_reports_transcode_without_streaming(self):
+        cam = "autoH264"
+        fname = "2026-07-01_10-00-00.mp4"
+        self._camera_file(cam, fname)
+        safe = {"video_codec": "h264", "video_profile": "High",
+                "video_pix_fmt": "yuv420p", "audio_codec": "aac"}
+        with mock.patch.object(self.m, "_probe_recording", return_value=safe):
+            r = self.client.get(f"/api/play/{cam}/{fname}?t=2&info=1",
+                                headers=auth(), follow_redirects=False)
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertFalse(r.json()["transcode"])
+        with mock.patch.object(self.m, "_probe_recording", return_value={
+                "video_codec": "hevc", "video_profile": "Main",
+                "video_pix_fmt": "yuv420p", "audio_codec": "aac"}):
+            r = self.client.get(f"/api/play/{cam}/{fname}?t=2&info=1",
+                                headers=auth(), follow_redirects=False)
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertTrue(r.json()["transcode"])
+
+    def test_auto_play_redirects_hevc_and_10bit_to_transcode(self):
+        cam = "autoHEVC"
+        fname = "2026-07-01_09-00-00.mp4"
+        self._camera_file(cam, fname)
+        for info in (
+            {"video_codec": "hevc", "video_profile": "Main",
+             "video_pix_fmt": "yuv420p", "audio_codec": "aac"},
+            {"video_codec": "h264", "video_profile": "High 10",
+             "video_pix_fmt": "yuv420p10le", "audio_codec": "aac"},
+        ):
+            with mock.patch.object(self.m, "_probe_recording", return_value=info):
+                r = self.client.get(f"/api/play/{cam}/{fname}?t=2&ss=12",
+                                    headers=auth(), follow_redirects=False)
+            self.assertEqual(r.status_code, 307, r.text)
+            self.assertIn(f"/api/play/{cam}/{fname}?t=1&ss=12.000", r.headers["location"])
+
+    def test_transcode_command_is_low_latency_and_seekable(self):
+        cmd = self.m._play_transcode_cmd("/rec/x.mp4", 12.5)
+        self.assertLess(cmd.index("-ss"), cmd.index("-i"))
+        self.assertIn("zerolatency", cmd)
+        self.assertIn("ultrafast", cmd)
+        self.assertIn("0:a:0?", cmd)
+        self.assertIn("frag_keyframe", " ".join(cmd))
+
+    def test_smb_auto_play_caches_file_and_streams_h264_once(self):
+        cam = "autoSMB"
+        day = "2026-07-02"
+        fname = f"{day}_08-00-00.mp4"
+        self.client.post("/api/cameras", json={
+            "cam_id": cam, "name": cam, "rtsp_url": "rtsp://127.0.0.1:1/x",
+            "record_mode": "off"}, headers=auth())
+        target = mock.Mock()
+        target.open_recording.return_value = io.BytesIO(b"smb-video")
+        info = {"video_codec": "h264", "video_profile": "Main",
+                "video_pix_fmt": "yuv420p", "audio_codec": "aac"}
+        with mock.patch.object(self.m, "_smb_target_for_playback", return_value=target), \
+             mock.patch.object(self.m, "_probe_recording", return_value=info):
+            info_res = self.client.get(f"/api/smb/play/{cam}/{day}/{fname}?t=2&info=1",
+                                       headers=auth(), follow_redirects=False)
+            r1 = self.client.get(f"/api/smb/play/{cam}/{day}/{fname}?t=2",
+                                 headers=auth(), follow_redirects=False)
+            r2 = self.client.get(f"/api/smb/play/{cam}/{day}/{fname}?t=2",
+                                 headers=auth(), follow_redirects=False)
+        self.assertEqual(info_res.status_code, 200, info_res.text)
+        self.assertFalse(info_res.json()["transcode"])
+        self.assertEqual(r1.status_code, 200, r1.text)
+        self.assertEqual(r1.content, b"smb-video")
+        self.assertEqual(r2.content, b"smb-video")
+        self.assertEqual(target.open_recording.call_count, 1)
+        self.assertTrue(os.path.isfile(os.path.join(
+            self.m.PLAYBACK_CACHE_DIR, "smb", cam, fname)))
+
+    def test_timeline_uses_auto_playback_urls(self):
+        cam = "autoH264"
+        day = "2026-07-03"
+        fname = f"{day}_08-00-00.mp4"
+        self._camera_file(cam, fname)
+        r = self.client.get(f"/api/timeline/{cam}?date={day}&source=local", headers=auth())
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertIn("t=2", r.json()["segments"][0]["file"])
+        with mock.patch.object(self.m, "_smb_list_recordings", return_value=[fname]):
+            r = self.client.get(f"/api/timeline/{cam}?date={day}&source=smb", headers=auth())
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertIn("api/smb/play/", r.json()["segments"][0]["file"])
+        self.assertIn("t=2", r.json()["segments"][0]["file"])
+
+    def test_prune_playback_cache_removes_expired_and_over_limit(self):
+        cache = self.m.PLAYBACK_CACHE_DIR
+        os.makedirs(cache, exist_ok=True)
+        old = os.path.join(cache, "old.bin")
+        new = os.path.join(cache, "new.bin")
+        for p in (old, new):
+            with open(p, "wb") as f:
+                f.write(b"x")
+        past = time.time() - self.m.PLAYBACK_CACHE_TTL_SEC - 60
+        os.utime(old, (past, past))
+        self.m.prune_playback_cache(force=True)
+        self.assertFalse(os.path.exists(old))
+        self.assertTrue(os.path.exists(new))
+        with mock.patch.object(self.m, "PLAYBACK_CACHE_MB", 0):
+            self.m.prune_playback_cache(force=True)
+        self.assertFalse(os.path.exists(new))
+
 
 
 if __name__ == "__main__":

@@ -41,7 +41,7 @@ mimetypes.add_type("video/mp2t", ".ts")
 NVR_USER = os.environ.get("NVR_USER", "admin")
 NVR_PASS = os.environ.get("NVR_PASS", "admin")
 AUTH_ENABLED = os.environ.get("NVR_AUTH", "on").lower() not in ("off", "0", "false", "no")
-APP_VERSION = (os.environ.get("LITENVR_VERSION") or "1.9.6").strip() or "1.9.6"
+APP_VERSION = (os.environ.get("LITENVR_VERSION") or "1.9.7").strip() or "1.9.7"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 _STATIC_CAND = os.path.join(BASE_DIR, "static")
@@ -57,6 +57,15 @@ BUFFER_DIR = "/dev/shm/buffer"
 THUMBS_DIR = os.path.join(STORAGE_DIR, "thumbnails")
 LEGACY_THUMBS_DIR = os.path.join(BUFFER_DIR, "thumbs")
 THUMB_CACHE_MAX_MB = 256
+PLAYBACK_CACHE_DIR = os.path.join(STORAGE_DIR, "playback_cache")
+PLAYBACK_CACHE_MB = max(64, int(os.environ.get("PLAYBACK_CACHE_MB", "2048") or "2048"))
+PLAYBACK_CACHE_TTL_SEC = max(300, int(os.environ.get("PLAYBACK_CACHE_TTL_SEC", "3600") or "3600"))
+PLAYBACK_TRANSCODE_MAX = max(1, min(4, int(os.environ.get("PLAYBACK_TRANSCODE_MAX", "2") or "2")))
+_PLAYBACK_PRESETS = {"ultrafast", "superfast", "veryfast", "faster", "fast", "medium"}
+PLAYBACK_PRESET = (os.environ.get("PLAYBACK_PRESET", "ultrafast") or "").strip()
+if PLAYBACK_PRESET not in _PLAYBACK_PRESETS:
+    PLAYBACK_PRESET = "ultrafast"
+PLAYBACK_CRF = max(18, min(30, int(os.environ.get("PLAYBACK_CRF", "23") or "23")))
 
 # Google Drive (24/7 backup) — các URL có thể override qua env để test bằng mock server
 DRIVE_OAUTH_BASE = os.environ.get("NVR_DRIVE_OAUTH_BASE", "https://oauth2.googleapis.com").rstrip("/")
@@ -67,7 +76,7 @@ DRIVE_TICK = float(os.environ.get("NVR_DRIVE_TICK", "20"))
 DRIVE_CHUNK = int(os.environ.get("NVR_DRIVE_CHUNK", str(16 * 1024 * 1024)))
 DRIVE_RETRY_BASE = float(os.environ.get("NVR_DRIVE_RETRY_BASE", "60"))
 
-for d in [RECORDINGS_DIR, SNAPSHOTS_DIR, HLS_DIR, BUFFER_DIR, THUMBS_DIR]:
+for d in [RECORDINGS_DIR, SNAPSHOTS_DIR, HLS_DIR, BUFFER_DIR, THUMBS_DIR, PLAYBACK_CACHE_DIR]:
     os.makedirs(d, exist_ok=True)
 
 # ---- Giám sát tài nguyên (CPU / RAM / ổ đĩa) cho dashboard ----
@@ -396,7 +405,8 @@ DEFAULT_CONFIG = {
         "smb_max_gb": 0,               # 0 = không giới hạn dung lượng bản ghi LiteNVR
         "smb_min_free_gb": 2,          # Dọn khi share còn trống dưới mức này (0 = tắt)
         "mode": "copy",               # copy = giữ ở HDD; move = xoá sau khi sao lưu
-        "cameras": [],                # [] = tất cả camera
+        "cameras": [],                # danh sách cam_id được sao lưu ngoài (rỗng = không camera nào)
+        "cameras_explicit": False,    # False = cấu hình cũ chưa phân biệt "rỗng = tất cả"
         "since_ts": 0                 # chỉ sao lưu bản ghi mới hơn mốc này
     }
 }
@@ -433,10 +443,27 @@ def _normalize_config(cfg: dict) -> dict:
     if not isinstance(gd.get("cameras"), list):
         gd["cameras"] = []
     bk = cfg.setdefault("backup", {})
+    had_explicit_cams = bool(bk.get("cameras_explicit"))
     for k, v in DEFAULT_CONFIG["backup"].items():
         bk.setdefault(k, v)
     if not isinstance(bk.get("cameras"), list):
         bk["cameras"] = []
+    known_cams = sorted(str(c) for c in (cfg.get("cameras") or {}))
+    if not had_explicit_cams:
+        selected = [str(c) for c in bk["cameras"] if str(c) in known_cams]
+        kind = str(bk.get("kind") or "")
+        backup_active = bool(bk.get("enabled")) and (
+            (kind == "folder" and (bk.get("folder_path") or "").strip())
+            or (kind == "ftp" and (bk.get("ftp_host") or "").strip())
+            or (kind == "smb" and (bk.get("smb_host") or "").strip()
+                and (bk.get("smb_share") or "").strip())
+        )
+        if not selected and backup_active:
+            selected = known_cams
+        bk["cameras"] = selected
+        bk["cameras_explicit"] = True
+    else:
+        bk["cameras"] = [str(c) for c in bk["cameras"] if str(c) in known_cams]
     # Di trú: camera cũ lưu "copy" nay chuyển sang "auto" để tự dò H.265
     for cam in cfg.get("cameras", {}).values():
         if cam.get("video_codec") in (None, "", "copy"):
@@ -1130,12 +1157,15 @@ def detect_video_codec(cam_id: str, cam_info: dict):
         return info
     return {}
 
-def _is_browser_safe_h264(codec: str, pix_fmt: str) -> bool:
+def _is_browser_safe_h264(codec: str, pix_fmt: str, profile: str = "") -> bool:
     """H.264 mà Chrome/Edge/Firefox giải mã được: profile thường + màu 8-bit 4:2:0.
-    Các biến thể 4:2:2/4:4:4/10-bit (một số camera Hanet dùng) gây hình rác ('vỡ')."""
+    Các biến thể 4:2:2/4:4:4/10-bit (một số camera Hanet dùng) gây hình rác/đen."""
     if codec not in ("h264", "avc1", "avc"):
         return False
     if pix_fmt and pix_fmt not in H264_BROWSER_SAFE_PIXFMT:
+        return False
+    prof = (profile or "").lower()
+    if "4:4:4" in prof or "4:2:2" in prof or "10" in prof:
         return False
     return True
 
@@ -1155,7 +1185,7 @@ def resolve_video_codec(cam_id: str, cam_info: dict):
             st["detected_profile"] = info.get("profile", "")
             st["detected_pix_fmt"] = info.get("pix_fmt", "")
             st["detect_failed"] = not bool(codec)
-    return "copy" if _is_browser_safe_h264(codec, info.get("pix_fmt", "")) else "h264"
+    return "copy" if _is_browser_safe_h264(codec, info.get("pix_fmt", ""), info.get("profile", "")) else "h264"
 
 # ---------------- ONVIF (tự dò camera & lấy URL RTSP) ----------------
 ONVIF_DEVICE_PATH = "/onvif/device_service"
@@ -2217,7 +2247,7 @@ def _needs_transcode(cam_id: str) -> bool:
     codec = st.get("detected_codec", "")
     if not codec:
         return True
-    return not _is_browser_safe_h264(codec, st.get("detected_pix_fmt", ""))
+    return not _is_browser_safe_h264(codec, st.get("detected_pix_fmt", ""), st.get("detected_profile", ""))
 
 def start_camera_worker(cam_id: str):
     with worker_lock:
@@ -2999,6 +3029,7 @@ def run_cleanup_now():
         log_event("warn", f"cleanup events: {e}")
 
     deleted_count += prune_thumbnail_cache()
+    deleted_count += prune_playback_cache()
     _size_cache["t"] = 0.0
     return deleted_count
 
@@ -3323,6 +3354,10 @@ def get_system_info():
     nvr_used_bytes = get_storage_dir_size()
     return {
         "version": APP_VERSION,
+        "storage_ready": {
+            "drive": _drive_storage_ready(),
+            "smb": _smb_storage_ready(),
+        },
         "retention_days": CONFIG.get("retention_days", 7),
         "max_storage_gb": CONFIG.get("max_storage_gb", 0),
         "max_disk_percent": CONFIG.get("max_disk_percent", 85),
@@ -3682,7 +3717,7 @@ def test_camera_stream(req: CameraTestReq):
         fps = round(float(num) / float(den or 1), 1)
     except (TypeError, ValueError, ZeroDivisionError):
         fps = 0.0
-    browser_safe = _is_browser_safe_h264(codec, pix_fmt)
+    browser_safe = _is_browser_safe_h264(codec, pix_fmt, profile)
     return {
         "ok": True,
         "codec": codec,
@@ -4443,7 +4478,7 @@ def get_timeline(cam_id: str, date: str, source: str = "auto"):
                     start_sec = h * 3600 + m * 60 + s
                     local_names.add(fname)
                     segments.append({
-                        "file": f"recordings/{cam_id}/{fname}",
+                        "file": f"api/play/{cam_id}/{fname}?t=2",
                         "cam": cam_id,
                         "fname": fname,
                         "time": time_part.replace("-", ":"),
@@ -4473,7 +4508,7 @@ def get_timeline(cam_id: str, date: str, source: str = "auto"):
             except Exception:
                 continue
             segments.append({
-                "file": f"api/play/{cam_id}/{fname}",
+                "file": f"api/play/{cam_id}/{fname}?t=2",
                 "cam": cam_id,
                 "fname": fname,
                 "time": time_part.replace("-", ":"),
@@ -4493,7 +4528,7 @@ def get_timeline(cam_id: str, date: str, source: str = "auto"):
             except Exception:
                 continue
             segments.append({
-                "file": f"api/smb/play/{urllib.parse.quote(cam_id)}/{date}/{urllib.parse.quote(fname)}",
+                "file": f"api/smb/play/{urllib.parse.quote(cam_id)}/{date}/{urllib.parse.quote(fname)}?t=2",
                 "cam": cam_id,
                 "fname": fname,
                 "time": time_part.replace("-", ":"),
@@ -4812,23 +4847,52 @@ def _backup_cfg() -> dict:
     return CONFIG.get("backup") or {}
 
 
+def _backup_destination_active(cfg: Optional[dict] = None) -> bool:
+    b = _backup_cfg() if cfg is None else cfg
+    kind = str(b.get("kind") or "")
+    return bool(b.get("enabled")) and (
+        (kind == "folder" and (b.get("folder_path") or "").strip())
+        or (kind == "ftp" and (b.get("ftp_host") or "").strip())
+        or (kind == "smb" and (b.get("smb_host") or "").strip()
+            and (b.get("smb_share") or "").strip())
+    )
+
+
+def _smb_storage_ready() -> bool:
+    b = _backup_cfg()
+    return bool(b.get("enabled") and str(b.get("kind") or "") == "smb"
+                and (b.get("smb_host") or "").strip() and (b.get("smb_share") or "").strip())
+
+
+def _drive_storage_ready() -> bool:
+    g = gd_cfg()
+    return bool(g.get("enabled") and drive_connected())
+
+
 def _backup_effective_cameras() -> set:
-    """Camera đang được sao lưu ngoài; danh sách rỗng = tất cả camera."""
-    selected = _backup_cfg().get("cameras") or []
+    """Camera đang được sao lưu ngoài; rỗng = không camera nào (trừ cấu hình cũ)."""
+    cfg = _backup_cfg()
+    selected = {str(c) for c in (cfg.get("cameras") or [])}
     if selected:
-        return {str(c) for c in selected}
+        return selected
+    if cfg.get("cameras_explicit"):
+        return set()
     return set(CONFIG.get("cameras", {}).keys())
 
 
 def _set_camera_smb(cam_id: str, enabled: bool):
     """Bật/tắt camera trong danh sách sao lưu ngoài mà không làm mất lựa chọn khác."""
     b = CONFIG.setdefault("backup", dict(DEFAULT_CONFIG["backup"]))
-    selected = _backup_effective_cameras()
+    known = CONFIG.get("cameras", {})
+    selected = {str(c) for c in (b.get("cameras") or []) if str(c) in known}
+    if not b.get("cameras_explicit"):
+        if not selected and _backup_destination_active(b):
+            selected = set(known)
+        b["cameras_explicit"] = True
     if enabled:
         selected.add(cam_id)
     else:
         selected.discard(cam_id)
-    known = CONFIG.get("cameras", {})
     b["cameras"] = sorted(c for c in selected if c in known)
 
 
@@ -4982,7 +5046,7 @@ def backup_scan() -> List[str]:
         return []
     done = _backup_done()
     locks = locked_paths()
-    cams = cfg.get("cameras") or list(CONFIG.get("cameras", {}).keys())
+    cams = sorted(_backup_effective_cameras())
     since = float(cfg.get("since_ts", 0) or 0)
     now = time.time()
     drive_pending = _drive_pending_paths() if drive_connected() else set()
@@ -5335,6 +5399,7 @@ def update_backup_settings(settings: BackupSettings):
     b["smb_min_free_gb"] = max(0.0, float(settings.smb_min_free_gb or 0))
     b["mode"] = settings.mode if settings.mode in ("copy", "move") else "copy"
     b["cameras"] = [str(x) for x in (settings.cameras or []) if str(x)]
+    b["cameras_explicit"] = bool(b["cameras"])
     b["since_ts"] = float(settings.since_ts or 0)
     save_config(CONFIG)
     log_event("info", "Đã lưu cấu hình lưu trữ ngoài SMB/NFS/FTP")
@@ -6650,17 +6715,170 @@ def get_cam_status(cam_id: str, request: Request):
         "log": logs,
     }
 
+_playback_probe_cache: Dict[str, tuple] = {}
+_playback_probe_lock = threading.Lock()
+_playback_cache_state = {"last_prune": 0.0}
+_playback_sem: Optional[asyncio.Semaphore] = None
+
+
+def _playback_semaphore() -> asyncio.Semaphore:
+    global _playback_sem
+    if _playback_sem is None:
+        _playback_sem = asyncio.Semaphore(PLAYBACK_TRANSCODE_MAX)
+    return _playback_sem
+
+
+def _probe_recording(path: str) -> dict:
+    """Dò codec video/audio của một file bản ghi (cache theo mtime + dung lượng)."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return {}
+    if not st.st_size:
+        return {}
+    key = (st.st_mtime_ns, st.st_size)
+    with _playback_probe_lock:
+        cached = _playback_probe_cache.get(path)
+        if cached and cached[0] == key:
+            return dict(cached[1])
+    cmd = [
+        "ffprobe", "-v", "error",
+        "-show_entries", "stream=codec_type,codec_name,profile,pix_fmt",
+        "-of", "json", path,
+    ]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+        data = json.loads(proc.stdout or "{}")
+    except Exception:
+        return {}
+    info: Dict[str, Any] = {}
+    for stream in data.get("streams") or []:
+        kind = str(stream.get("codec_type") or "")
+        if kind == "video" and "video_codec" not in info:
+            info["video_codec"] = str(stream.get("codec_name") or "").lower()
+            info["video_profile"] = str(stream.get("profile") or "").lower()
+            info["video_pix_fmt"] = str(stream.get("pix_fmt") or "").lower()
+        elif kind == "audio" and "audio_codec" not in info:
+            info["audio_codec"] = str(stream.get("codec_name") or "").lower()
+    if info.get("video_codec"):
+        with _playback_probe_lock:
+            if len(_playback_probe_cache) >= 512:
+                for old_key in list(_playback_probe_cache)[:128]:
+                    _playback_probe_cache.pop(old_key, None)
+            _playback_probe_cache[path] = (key, dict(info))
+    return info
+
+
+def _recording_needs_transcode(path: str) -> bool:
+    """True nếu video/audio không chắc trình duyệt phát được (HEVC, H.264 10-bit, audio lạ)."""
+    info = _probe_recording(path)
+    if not info:
+        return True
+    codec = info.get("video_codec", "")
+    if not _is_browser_safe_h264(codec, info.get("video_pix_fmt", ""),
+                                 info.get("video_profile", "")):
+        return True
+    return bool(info.get("audio_codec") and info["audio_codec"] not in ("aac", "mp3"))
+
+
+def prune_playback_cache(force: bool = False) -> int:
+    """Dọn file SMB tải tạm để xem lại; giữ cache gần đây, xoá cũ và quá hạn mức."""
+    now = time.time()
+    if not force and now - float(_playback_cache_state.get("last_prune") or 0) < 300:
+        return 0
+    _playback_cache_state["last_prune"] = now
+    files = []
+    removed = 0
+    for root, _, names in os.walk(PLAYBACK_CACHE_DIR):
+        for name in names:
+            fp = os.path.join(root, name)
+            try:
+                st = os.stat(fp)
+            except OSError:
+                continue
+            if now - st.st_mtime > PLAYBACK_CACHE_TTL_SEC:
+                try:
+                    os.remove(fp)
+                    removed += 1
+                except OSError:
+                    pass
+            else:
+                files.append((st.st_mtime, st.st_size, fp))
+    max_bytes = PLAYBACK_CACHE_MB * 1024 * 1024
+    total = sum(size for _, size, _ in files)
+    for _, size, fp in sorted(files):
+        if total <= max_bytes:
+            break
+        try:
+            os.remove(fp)
+            total -= size
+            removed += 1
+        except OSError:
+            pass
+    return removed
+
+
+def _smb_playback_cache_path(cam: str, date: str, name: str) -> str:
+    return os.path.join(PLAYBACK_CACHE_DIR, "smb", os.path.basename(cam),
+                        os.path.basename(name))
+
+
+def _ensure_smb_playback_file(target, cam: str, date: str, name: str) -> str:
+    """Tải đoạn ghi SMB vào cache cục bộ để ffprobe/ffmpeg đọc và tua ổn định."""
+    path = _smb_playback_cache_path(cam, date, name)
+    try:
+        if os.path.isfile(path) and os.path.getsize(path) > 0:
+            return path
+    except OSError:
+        pass
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = f"{path}.{uuid.uuid4().hex}.part"
+    fh = None
+    try:
+        fh = target.open_recording(date, os.path.basename(cam), os.path.basename(name))
+        with open(tmp, "wb") as out:
+            shutil.copyfileobj(fh, out, 1024 * 1024)
+        if not os.path.isfile(tmp) or os.path.getsize(tmp) <= 0:
+            raise RuntimeError("File SMB rỗng")
+        os.replace(tmp, path)
+        prune_playback_cache()
+        return path
+    finally:
+        if fh is not None:
+            try:
+                fh.close()
+            except Exception:
+                pass
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except OSError:
+            pass
+
+
+def _playback_response(path: str, force_url: str):
+    """Phát trực tiếp nếu trình duyệt chắc chắn đọc được; nếu không, chuyển hướng
+    sang URL t=1. UI gọi info=1 trước để biết có chuyển mã và tránh tua hai lần."""
+    if not _recording_needs_transcode(path):
+        return FileResponse(path, media_type="video/mp4")
+    return RedirectResponse(force_url, status_code=307)
+
+
 def _play_transcode_cmd(path: str, ss: float = 0):
-    """Lệnh chuyển mã bản ghi HEVC/H.265 sang H.264 cho trình duyệt.
-    -ss đặt TRƯỚC -i để tua nhanh (input seek) thay vì phát từ đầu."""
+    """Chuyển mã bản ghi HEVC/H.265/H.264 lạ sang H.264 + AAC cho trình duyệt.
+    -ss đặt TRƯỚC -i để tua nhanh (input seek). Ultrafast + GOP 2s giúp seek mượt."""
     cmd = _ffmpeg_base_args()
     if ss and ss > 0:
         cmd += ["-ss", f"{ss:.3f}"]
     cmd += [
         "-threads", str(FFMPEG_THREADS), "-i", path,
-        "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
+        "-map", "0:v:0", "-map", "0:a:0?",
+        "-c:v", "libx264", "-preset", PLAYBACK_PRESET, "-tune", "zerolatency",
+        "-crf", str(PLAYBACK_CRF), "-pix_fmt", "yuv420p",
+        "-g", "50", "-keyint_min", "50", "-sc_threshold", "0",
         "-threads", str(FFMPEG_THREADS),
-        "-c:a", "aac",
+        "-c:a", "aac", "-b:a", "96k", "-ac", "2",
+        "-sn", "-dn",
         "-movflags", "frag_keyframe+empty_moov+default_base_moof",
         "-f", "mp4", "pipe:1",
     ]
@@ -6711,6 +6929,8 @@ class _TranscodedRecordingResponse(StreamingResponse):
             yield chunk
 
     async def __call__(self, scope, receive, send):
+        sem = _playback_semaphore()
+        await sem.acquire()
         try:
             with anyio.CancelScope(shield=True):
                 if _shutdown.is_set():
@@ -6727,6 +6947,7 @@ class _TranscodedRecordingResponse(StreamingResponse):
             if self.proc:
                 with anyio.CancelScope(shield=True):
                     await _stop_playback_process(self.proc)
+            sem.release()
 
 
 def _range_bounds(header: str, size: int):
@@ -6758,8 +6979,10 @@ def _range_bounds(header: str, size: int):
 
 
 @app.get("/api/smb/play/{cam_id}/{date}/{fname}")
-def play_smb_recording(cam_id: str, date: str, fname: str, request: Request):
-    """Phát bản ghi trực tiếp từ SMB/Samba, hỗ trợ Range để tua trong trình duyệt."""
+def play_smb_recording(cam_id: str, date: str, fname: str, request: Request,
+                       t: int = 0, ss: float = 0, info: int = 0):
+    """Phát bản ghi SMB. t=0: stream trực tiếp; t=1: buộc H.264;
+    t=2: tự dò codec rồi phát trực tiếp hoặc chuyển mã H.264/AAC."""
     cam = os.path.basename(cam_id)
     name = os.path.basename(fname)
     if not re.match(r"^\d{4}-\d{2}-\d{2}$", date or "") or not REC_NAME_RE.match(name):
@@ -6767,6 +6990,21 @@ def play_smb_recording(cam_id: str, date: str, fname: str, request: Request):
     target = _smb_target_for_playback()
     if not target:
         raise HTTPException(status_code=400, detail="Chưa cấu hình lưu trữ ngoài SMB")
+    if t in (1, 2) or info:
+        try:
+            path = _ensure_smb_playback_file(target, cam, date, name)
+        except Exception as e:
+            log_event("warn", f"Không tải được bản ghi SMB để phát: {mask_secrets(str(e))}", cam)
+            raise HTTPException(status_code=502, detail="Không tải được bản ghi từ SMB")
+        finally:
+            target.close()
+        if info:
+            return JSONResponse({"transcode": _recording_needs_transcode(path)})
+        if t == 2:
+            force_url = (f"/api/smb/play/{urllib.parse.quote(cam)}/{date}/"
+                         f"{urllib.parse.quote(name)}?t=1&ss={max(0, ss):.3f}")
+            return _playback_response(path, force_url)
+        return _TranscodedRecordingResponse(_play_transcode_cmd(path, ss), cam)
     try:
         fh = target.open_recording(date, cam, name)
         size = fh.seek(0, os.SEEK_END)
@@ -6802,18 +7040,23 @@ def play_smb_recording(cam_id: str, date: str, fname: str, request: Request):
 
 
 @app.get("/api/play/{cam_id}/{fname}")
-def play_recording(cam_id: str, fname: str, t: int = 0, ss: float = 0):
-    """Phát bản ghi. t=1: transcode sang H.264/AAC để trình duyệt phát được
-    (dùng cho camera H.265/HEVC mà không cần ghi lại). ss = tua tới giây thứ N."""
+def play_recording(cam_id: str, fname: str, t: int = 0, ss: float = 0, info: int = 0):
+    """Phát bản ghi. t=0: file gốc; t=1: buộc H.264/AAC; t=2: tự dò codec
+    và chỉ chuyển mã khi trình duyệt không phát được (HEVC, H.264 10-bit...)."""
     safe_cam = os.path.basename(cam_id)
     safe_name = os.path.basename(fname)
     path = ensure_local_recording(safe_cam, safe_name)
     if not path:
         raise HTTPException(status_code=404, detail="Không tìm thấy bản ghi")
+    if info:
+        return JSONResponse({"transcode": _recording_needs_transcode(path)})
 
     if not t:
         return FileResponse(path, media_type="video/mp4")
-
+    if t == 2:
+        force_url = (f"/api/play/{urllib.parse.quote(safe_cam)}/"
+                     f"{urllib.parse.quote(safe_name)}?t=1&ss={max(0, ss):.3f}")
+        return _playback_response(path, force_url)
     return _TranscodedRecordingResponse(_play_transcode_cmd(path, ss), safe_cam)
 
 # ================= API bảo mật: đăng nhập, tài khoản con, 2FA, nhật ký =================

@@ -2067,6 +2067,13 @@
 
     .storage-option:hover { border-color: var(--border-hover); }
 
+    .storage-option:has(input:disabled) {
+      opacity: 0.55;
+      cursor: not-allowed;
+    }
+
+    .storage-option:has(input:disabled):hover { border-color: var(--border-subtle); }
+
     .storage-option:has(input:checked) {
       border-color: var(--accent);
       background: rgba(var(--accent-rgb), 0.10);
@@ -3540,6 +3547,7 @@
 
   <script>
     let cameras = {}, sysInfo = {}, currentCam = "", segments = [], hls = null, liveHeartbeatTimer = null, liveMode = true;
+    let storageReady = { drive: false, smb: false };
     let livePc = null, livePcSeq = 0;
     let editingCamId = null;
     let _uiTimersStarted = false;
@@ -3747,6 +3755,8 @@
     async function loadSystem() {
       const res = await fetch("api/system");
       sysInfo = await res.json();
+      const ready = sysInfo.storage_ready || {};
+      storageReady = { drive: !!ready.drive, smb: !!ready.smb };
     }
 
     async function loadAppVersion() {
@@ -4520,17 +4530,24 @@
     }
 
     function setStorageSelection(prefix, target, smb, smbMove) {
-      const t = ["hdd", "drive", "both"].includes(target) ? target : "both";
-      const local = !(t === "drive" || (smb && smbMove));
+      let t = ["hdd", "drive", "both"].includes(target) ? target : "hdd";
+      if (!storageReady.drive && (t === "drive" || t === "both")) t = "hdd";
+      const drive = storageReady.drive && (t === "both" || t === "drive");
+      const smbOn = storageReady.smb && !!smb;
+      const local = !(t === "drive" || (smbOn && smbMove));
       const values = {
         StgLocal: local,
-        StgDrive: t === "both" || t === "drive",
-        StgSmb: !!smb
+        StgDrive: drive,
+        StgSmb: smbOn
       };
       Object.entries(values).forEach(([id, value]) => {
         const el = document.getElementById(prefix + id);
         if (el) el.checked = value;
       });
+      const driveEl = document.getElementById(prefix + "StgDrive");
+      const smbEl = document.getElementById(prefix + "StgSmb");
+      if (driveEl) driveEl.disabled = !storageReady.drive;
+      if (smbEl) smbEl.disabled = !storageReady.smb;
       updateStorageHint(prefix);
     }
 
@@ -5267,11 +5284,36 @@
       });
       livePc = pc;
       const stream = new MediaStream();
-      const trackReady = new Promise(resolve => {
-        const timer = setTimeout(() => resolve(false), 4000);
-        pc.addEventListener("track", ev => {
-          if (ev.track && ev.track.kind === "video") { clearTimeout(timer); resolve(true); }
-        });
+      let stopFrameWatch = () => {};
+      const firstFrame = new Promise(resolve => {
+        let done = false;
+        let timer = null;
+        const check = () => {
+          if (done) return;
+          if (video.videoWidth > 0 && video.readyState >= 2) finish(true);
+        };
+        const onFrame = () => {
+          check();
+          if (!done && typeof video.requestVideoFrameCallback === "function") {
+            video.requestVideoFrameCallback(onFrame);
+          }
+        };
+        const finish = ok => {
+          if (done) return;
+          done = true;
+          clearTimeout(timer);
+          video.removeEventListener("loadeddata", check);
+          resolve(ok);
+        };
+        video.addEventListener("loadeddata", check);
+        timer = setTimeout(() => {
+          if (typeof video.requestVideoFrameCallback !== "function") check();
+          finish(false);
+        }, 5000);
+        stopFrameWatch = () => finish(false);
+        if (typeof video.requestVideoFrameCallback === "function") {
+          video.requestVideoFrameCallback(onFrame);
+        }
       });
       pc.ontrack = ev => {
         const tracks = ev.streams && ev.streams[0] ? ev.streams[0].getTracks() : [ev.track];
@@ -5309,11 +5351,13 @@
         if (!answer.startsWith("v=")) throw new Error("SDP không hợp lệ");
         await pc.setRemoteDescription({type: "answer", sdp: answer});
         const ok = await connected;
-        const hasVideo = await trackReady;
+        const hasVideo = await firstFrame;
+        stopFrameWatch();
         if (!ok || !hasVideo) throw new Error("WebRTC không nhận được hình");
         if (pcSeq !== livePcSeq || seq !== liveWaitSeq || camId !== currentCam || !liveMode) throw new Error("stale");
         return true;
       } catch (e) {
+        stopFrameWatch();
         try { pc.close(); } catch (_) {}
         if (livePc === pc) livePc = null;
         if (video.srcObject === stream) video.srcObject = null;
@@ -5335,10 +5379,18 @@
         return;
       }
       const codec = String(info.detected_codec || "").toLowerCase();
-      const transcoding = codec === "hevc" || codec === "h265";
-      const liveLabel = transcoding ? "HLS - H.265 chuyển mã" : "HLS";
+      const profile = String(info.detected_profile || "").toLowerCase();
+      const pixFmt = String(info.detected_pix_fmt || "").toLowerCase();
+      const unsafeH264 = codec === "h264" && (
+        profile.includes("4:2:2") || profile.includes("4:4:4") || profile.includes("10") ||
+        (pixFmt && !["yuv420p", "yuvj420p"].includes(pixFmt))
+      );
+      const transcoding = codec === "hevc" || codec === "h265" || unsafeH264;
+      const liveLabel = transcoding
+        ? (unsafeH264 ? "HLS - H.264 lạ chuyển mã" : "HLS - H.265 chuyển mã")
+        : "HLS";
       if (transcoding) {
-        __clientLog("warn", "Live đang dùng HLS và chuyển mã H.265; nên khai báo luồng phụ H.264 để giảm CPU", camId);
+        __clientLog("warn", "Live đang dùng HLS và chuyển mã; nên khai báo luồng phụ H.264 chuẩn để giảm CPU", camId);
       }
       if (typeof Hls !== "undefined" && Hls.isSupported()) {
         if (hls) { hls.destroy(); hls = null; }
@@ -5377,6 +5429,7 @@
 
     async function playLive() {
       if (!currentCam) return;
+      playbackWatchSeq++;
       const camId = currentCam;
       stopLiveHeartbeat();
       stopLiveWebRTC();
@@ -6079,6 +6132,7 @@
     }
 
     let currentSegStartSec = null;
+    let playbackWatchSeq = 0;
     let driveFetchPoll = null;
     function stopDriveFetchPoll() {
       if (driveFetchPoll) { clearInterval(driveFetchPoll); driveFetchPoll = null; }
@@ -6124,13 +6178,25 @@
       tick();
       driveFetchPoll = setInterval(tick, 1000);
     }
-    function playSegment(idx, offset) {
+    function playbackModeUrl(seg, mode, offset) {
+      const base = String(seg.file || "").split("?")[0];
+      const q = new URLSearchParams(String(seg.file || "").split("?")[1] || "");
+      q.set("t", String(mode));
+      q.set("ss", Math.max(0, offset || 0).toFixed(2));
+      return base + "?" + q.toString();
+    }
+
+    async function playSegment(idx, offset) {
       stopLiveHeartbeat();
+      const watchSeq = ++playbackWatchSeq;
+      video.onended = null;
+      video.onerror = null;
+      video.onloadedmetadata = null;
+      try { video.pause(); } catch (e) {}
+      const watchActive = () => watchSeq === playbackWatchSeq;
       const seg = segments[idx];
-      const parts = seg.file.split("/");
-      const cam = seg.cam || parts[2] || currentCam;
-      const fname = seg.fname || parts[parts.length - 1];
-      const transUrl = `api/play/${encodeURIComponent(cam)}/${encodeURIComponent(fname)}?t=1&ss=${Math.max(0, offset || 0).toFixed(2)}`;
+      const autoUrl = playbackModeUrl(seg, 2, offset);
+      const forceUrl = playbackModeUrl(seg, 1, offset);
 
       currentSegStartSec = seg.start_sec;
       if (seg.drive) {
@@ -6140,41 +6206,98 @@
       } else {
         document.getElementById("statusText").textContent = `Phát lại: ${seg.time}`;
       }
-      if (seg.drive) pollDriveFetch(cam, fname); else stopDriveFetchPoll();
+      if (seg.drive) pollDriveFetch(seg.cam, seg.fname); else stopDriveFetchPoll();
       let triedTranscode = false;
+      let frameTimer = null;
+      document.getElementById("statusText").textContent = seg.smb
+        ? `📁 Đang tải bản ghi SMB để kiểm tra codec: ${seg.time}`
+        : `Đang kiểm tra codec bản ghi: ${seg.time}`;
+      try {
+        const infoRes = await fetch(autoUrl + "&info=1", {cache: "no-store"});
+        if (infoRes.ok) {
+          triedTranscode = !!(await infoRes.json()).transcode;
+        }
+      } catch (e) {}
+      if (!watchActive()) return;
 
+      const clearFrameTimer = () => {
+        if (frameTimer) { clearTimeout(frameTimer); frameTimer = null; }
+      };
+      const showError = () => {
+        clearFrameTimer();
+        stopDriveFetchPoll();
+        document.getElementById("statusText").textContent = seg.smb
+          ? "Không phát được bản ghi từ SMB/Samba. Kiểm tra kết nối SMB và log máy chủ."
+          : "Không phát được bản ghi này. Bấm 🔍 Chẩn đoán để xem lỗi.";
+        __clientLog("error", "Không phát được bản ghi (" + segSourceLabel(seg) + "): " + seg.file);
+      };
+      const isTranscodedStream = () => triedTranscode || /(?:[?&])t=1(?:&|$)/.test(video.currentSrc || "");
       const startAt = () => {
-        try { video.currentTime = triedTranscode ? 0 : offset; } catch (e) {}
+        try { video.currentTime = isTranscodedStream() ? 0 : offset; } catch (e) {}
         video.play().catch(() => {});
       };
+      const switchToForce = () => {
+        if (!watchActive()) return true;
+        if (triedTranscode) return false;
+        triedTranscode = true;
+        clearFrameTimer();
+        document.getElementById("statusText").textContent =
+          "Đang chuyển mã sang H.264 để phát (camera H.265)...";
+        video.onloadedmetadata = () => {
+          if (!watchActive()) return;
+          video.onloadedmetadata = null;
+          stopDriveFetchPoll();
+          if (seg.drive) document.getElementById("statusText").textContent = `☁️ Phát lại từ Drive: ${seg.time}`;
+          else if (seg.smb) document.getElementById("statusText").textContent = `📁 Phát lại từ SMB/Samba: ${seg.time}`;
+          startAt();
+          watchFrame();
+        };
+        video.src = forceUrl;
+        return true;
+      };
+      const watchFrame = () => {
+        clearFrameTimer();
+        if (typeof video.requestVideoFrameCallback === "function") {
+          let gotFrame = false;
+          video.requestVideoFrameCallback(() => { gotFrame = true; clearFrameTimer(); });
+          frameTimer = setTimeout(() => {
+            if (!watchActive()) return;
+            if (!gotFrame && !switchToForce()) showError();
+          }, 3500);
+        } else {
+          frameTimer = setTimeout(() => {
+            if (!watchActive()) return;
+            if (video.videoWidth > 0 || video.readyState >= 2) return;
+            if (!switchToForce()) showError();
+          }, 3500);
+        }
+      };
+
       video.onloadedmetadata = () => {
+        if (!watchActive()) return;
         video.onloadedmetadata = null;
         stopDriveFetchPoll();
         if (seg.drive) document.getElementById("statusText").textContent = `☁️ Phát lại từ Drive: ${seg.time}`;
         else if (seg.smb) document.getElementById("statusText").textContent = `📁 Phát lại từ SMB/Samba: ${seg.time}`;
         startAt();
+        watchFrame();
       };
       video.onerror = () => {
-        if (!triedTranscode && !seg.smb) {
-          triedTranscode = true;
-          document.getElementById("statusText").textContent =
-            "Đang chuyển mã sang H.264 để phát (camera H.265)...";
-          video.onloadedmetadata = () => {
-            video.onloadedmetadata = null;
-            stopDriveFetchPoll();
-            if (seg.drive) document.getElementById("statusText").textContent = `☁️ Phát lại từ Drive: ${seg.time}`;
-            startAt();
-          };
-          video.src = transUrl;
-        } else {
-          stopDriveFetchPoll();
-          document.getElementById("statusText").textContent = seg.smb
-            ? "Không phát được bản ghi từ SMB/Samba. Kiểm tra cấu hình SMB và định dạng H.264."
-            : "Không phát được bản ghi này. Bấm 🔍 Chẩn đoán để xem lỗi.";
-          __clientLog("error", "Không phát được bản ghi (" + segSourceLabel(seg) + "): " + seg.file);
-        }
+        if (switchToForce()) return;
+        showError();
       };
-      video.src = seg.file;
+      if (triedTranscode) {
+        document.getElementById("statusText").textContent =
+          "Đang chuyển mã sang H.264 để phát (camera H.265)...";
+        video.src = forceUrl;
+      } else {
+        if (!seg.drive) {
+          document.getElementById("statusText").textContent = seg.smb
+            ? `📁 Phát lại từ SMB/Samba: ${seg.time}`
+            : `Phát lại: ${seg.time}`;
+        }
+        video.src = autoUrl;
+      }
 
       video.onended = () => {
         if (idx + 1 < segments.length) playSegment(idx + 1, 0);
@@ -6724,6 +6847,7 @@
       const st = document.getElementById("bkStatus");
       st.style.color = r.ok ? "var(--ok-text)" : "var(--err-text)";
       st.textContent = r.ok ? "✔ Đã lưu cấu hình sao lưu." : "❌ Lưu lỗi.";
+      if (r.ok) loadSystem().catch(() => {});
       if (r.ok && document.getElementById("bkKind").value === "smb") refreshSmbSpace();
       return r.ok;
     }
@@ -6738,6 +6862,7 @@
         const d = await r.json();
         st.style.color = r.ok ? "var(--ok-text)" : "var(--err-text)";
         st.textContent = r.ok ? "✔ Đích OK: " + JSON.stringify(d.results) : "❌ " + (d.detail || r.status);
+        if (r.ok) loadSystem().catch(() => {});
         if (r.ok && document.getElementById("bkKind").value === "smb") refreshSmbSpace();
       } catch (e) {
         st.style.color = "var(--err-text)";
@@ -7527,6 +7652,7 @@
       const r = await fetch("api/drive", { method: "POST", body: JSON.stringify(body) });
       if (!r.ok) { drvMsg("❌ Không lưu được cài đặt", true); return; }
       drvMsg("✅ Đã lưu cài đặt sao lưu.");
+      loadSystem().catch(() => {});
       loadDrive();
     }
     async function driveUploadNow() {

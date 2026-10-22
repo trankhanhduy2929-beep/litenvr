@@ -54,12 +54,12 @@ Sự kiện AI đi đúng luồng cũ: kích hoạt ghi hình, lưu vào danh s�
 
 ## Xem Live / Bản ghi bị đen hoặc không phát
 Nguyên nhân phổ biến: camera dùng **H.265/HEVC** — trình duyệt (Chrome/Edge/Firefox) không giải mã được.
-- Mặc định LiteNVR dùng **Tự động phát hiện**: tự dò codec camera bằng `ffprobe`; nếu là H.265/HEVC sẽ tự chuyển sang H.264 cho cả Live (HLS) và khi phát bản ghi.
+- Mặc định LiteNVR dùng **Tự động phát hiện**: tự dò codec camera/bản ghi bằng `ffprobe`; nếu là H.265/HEVC, H.264 10-bit hoặc 4:2:2/4:4:4 sẽ tự chuyển sang H.264 8-bit cho Live (HLS) và khi phát bản ghi.
 - Muốn chỉnh tay: **+ Quản lý Camera** → sửa camera → mở **⚙️ Tùy chọn nâng cao** → **Codec video**:
   - **Tự động phát hiện** (khuyến nghị).
   - **Copy**: nhẹ CPU nhất, chỉ dùng khi camera chắc chắn là H.264.
   - **Luồng live luôn chuyển sang H.264**: tương thích mọi trình duyệt, tốn CPU hơn; **bản ghi vẫn giữ codec gốc**.
-- Phát bản ghi cũ quay bằng H.265: LiteNVR tự chuyển mã khi trình duyệt báo lỗi (không cần quay lại).
+- Phát bản ghi cũ quay bằng H.265: LiteNVR dò codec **trước khi phát**; nếu không an toàn với trình duyệt sẽ tự chuyển mã sang H.264/AAC (không cần quay lại, không phụ thuộc vào việc trình duyệt có báo lỗi hay không).
 - Nút **🔍 Chẩn đoán** hiển thị trạng thái ffmpeg, codec dò được và log lỗi gần nhất.
 - **Âm thanh Live**: bấm nút **🔇 Tiếng / 🔊 Tiếng** cạnh **Trực tiếp** để bật/tắt. LiteNVR tự chuyển âm thanh G.711/AAC của camera (EZVIZ, Hikvision…) sang AAC để trình duyệt phát được; nếu camera kén tiếng hoặc không có audio, chọn **Tắt âm thanh** trong phần nâng cao của camera.
 
@@ -87,7 +87,7 @@ Nguyên nhân phổ biến: camera dùng **H.265/HEVC** — trình duyệt (Chro
 
 ## Tiết kiệm CPU / RAM
 - **Restream nội bộ (go2rtc)**: bản Docker đã kèm `go2rtc`; LiteNVR tự tạo cấu hình và đẩy mọi nguồn qua restream `rtsp://127.0.0.1:8554`, nhờ đó **mỗi camera chỉ tốn 1 phiên RTSP** dù có ghi hình + xem live + chụp snapshot (tránh lỗi "đủ số phiên" của Hikvision/EZVIZ). Các stream bạn tự thêm trong `go2rtc.yaml` được **giữ nguyên** khi LiteNVR cập nhật cấu hình. Tắt bằng biến môi trường `GO2RTC=off`.
-- **Live WebRTC nhẹ CPU**: LiteNVR tự thử phát qua go2rtc WebRTC trước và **ưu tiên luồng phụ** nếu đã khai báo. Camera H.264 được truyền thẳng, **không chuyển mã**; H.265 cũng truyền thẳng trên Chrome 136+/Safari 18+, còn trình duyệt không hỗ trợ hoặc mạng không mở được cổng sẽ tự quay về HLS. Thanh trạng thái ghi rõ `WebRTC` hoặc `HLS`; nếu thấy `HLS - H.265 chuyển mã` thì nên thêm luồng phụ H.264. Cần `GO2RTC=auto`/`on` và mở **8556/TCP + 8556/UDP** (`WEBRTC_PORT` để đổi cổng). Nếu tên miền/IP trình duyệt khác IP máy chủ, đặt `WEBRTC_PUBLIC_HOST=<ip-lan>` để ICE trỏ đúng.
+- **Live WebRTC nhẹ CPU**: LiteNVR tự thử phát qua go2rtc WebRTC trước và **ưu tiên luồng phụ** nếu đã khai báo. Camera H.264 được truyền thẳng, **không chuyển mã**; H.265 cũng truyền thẳng trên Chrome 136+/Safari 18+. LiteNVR kiểm tra **khung hình đầu tiên** thực sự render; nếu track không có hình, trình duyệt không hỗ trợ hoặc mạng không mở được cổng sẽ tự quay về HLS. Thanh trạng thái ghi rõ `WebRTC` hoặc `HLS`; nếu thấy `HLS - H.265 chuyển mã` thì nên thêm luồng phụ H.264. Cần `GO2RTC=auto`/`on` và mở **8556/TCP + 8556/UDP** (`WEBRTC_PORT` để đổi cổng). Nếu tên miền/IP trình duyệt khác IP máy chủ, đặt `WEBRTC_PUBLIC_HOST=<ip-lan>` để ICE trỏ đúng.
 - **Live nhẹ CPU (LIVE_MAX_HEIGHT)**: với camera 2K/4K phải chuyển mã (H.265/HEVC), live được hạ về tối đa 720p — giảm tải mã hoá, băng thông (dễ xem qua Wi-Fi/4G) và tải máy khách; **bản ghi vẫn giữ nguyên độ phân giải gốc**. Đổi bằng biến môi trường `LIVE_MAX_HEIGHT` (`0` = giữ nguyên, `1080` = nét hơn nhưng nặng hơn). Lưu ý: camera HEVC vẫn tốn CPU để *giải mã* — cách tiết kiệm nhất là dùng luồng H.264 (xem bên dưới).
 - **Dùng luồng phụ cho Live**: điền "Luồng phụ" trong phần sửa camera (vd Imou/Dahua `subtype=1`, Hikvision `/Streaming/Channels/102`) — live thường là H.264 nên **không cần chuyển mã** (CPU gần như 0).
 - **Live theo nhu cầu**: khi không có ai xem, LiteNVR không tạo nhánh HLS/ffmpeg live; chỉ còn tiến trình ghi hình. Khi mở lại live, luồng tự khởi động trong vài giây; nếu dùng WebRTC thì camera được go2rtc kéo trực tiếp. Có thể chỉnh thời gian chờ: biến môi trường `LIVE_IDLE_STOP_SEC` (mặc định 30 giây).
@@ -144,7 +144,7 @@ Bấm **💾 Lưu trữ ngoài (SMB/FTP)** (admin) để tự động chuyển c
 - **Tự động xóa trên SMB**: bật **Tự động xóa bản ghi cũ trên SMB**, đặt số ngày giữ, GB tối đa và GB trống tối thiểu (0 = tắt từng giới hạn). LiteNVR chỉ xóa file do chính nó đã sao lưu và ghi nhận trong `backup_done`, không đụng file khác trên share. Bản ghi đang khoá hoặc vừa chuyển trong 2 phút được bỏ qua. Nút **🧹 Dọn SMB ngay** chạy theo cấu hình đang lưu; API: `POST /api/backup/smb/cleanup`.
 - **Camera**: bỏ trống = tất cả. Bản ghi **đang ghi** (mới hơn 30 giây), bản ghi **đã chuyển** và bản ghi **đang khoá** sẽ bị bỏ qua; file thành công được ghi nhận để không chuyển lại.
 - Nút **🔌 Kiểm tra đích** thử ghi file hoặc kết nối SMB/FTP, kèm dung lượng share nếu là SMB. API: `GET/POST /api/backup`, `POST /api/backup/test`.
-- **Xem lại trực tiếp từ SMB**: trên dòng thời gian chọn **Nguồn phát → Chỉ SMB/Samba**; LiteNVR liệt kê file trong `<thư mục con>/YYYY-MM-DD/<mã camera>` và stream qua HTTP Range để tua mà không tải cả file. Chỉ áp dụng khi kiểu lưu trữ ngoài là SMB (không áp dụng cho thư mục mount/FTP), và trình duyệt phải phát được codec gốc (H.264).
+- **Xem lại trực tiếp từ SMB**: trên dòng thời gian chọn **Nguồn phát → Chỉ SMB/Samba**; LiteNVR liệt kê file trong `<thư mục con>/YYYY-MM-DD/<mã camera>`. File H.264 an toàn được stream trực tiếp qua HTTP Range; file H.265/HEVC hoặc H.264 lạ được tải vào cache tạm rồi chuyển mã H.264/AAC (lần đầu chậm hơn do phải tải đoạn ghi). Chỉ áp dụng khi kiểu lưu trữ ngoài là SMB (không áp dụng cho thư mục mount/FTP).
 
 ## Chọn nguồn phát lại
 
@@ -152,7 +152,7 @@ Bấm **💾 Lưu trữ ngoài (SMB/FTP)** (admin) để tự động chuyển c
 - **Tự động (ổ gốc + Drive)**: mặc định, ưu tiên file trên ổ cứng và bổ sung đoạn chỉ còn trên Drive.
 - **Chỉ ổ gốc**: chỉ bản ghi còn trong `/storage/recordings`.
 - **Chỉ Google Drive**: chỉ đoạn đã sao lưu Drive; bấm xem sẽ tải về ổ cứng trước khi phát.
-- **Chỉ SMB/Samba**: đọc trực tiếp từ share SMB đã cấu hình, có hỗ trợ Range để tua.
+- **Chỉ SMB/Samba**: đọc từ share SMB đã cấu hình; H.264 an toàn phát trực tiếp có Range, H.265/H.264 lạ được cache tạm rồi chuyển mã H.264.
 
 API timeline nhận thêm `source=auto|local|drive|smb`: `GET /api/timeline/<cam_id>?date=YYYY-MM-DD&source=drive`.
 
@@ -169,7 +169,7 @@ Bấm **☁️ Google Drive** (chỉ tài khoản admin) để bật tính năng
 
 **Cài đặt trong hộp thoại Drive:**
 - **Camera sao lưu**: bỏ trống = tất cả camera.
-- **Nơi lưu bản ghi (trong Sửa camera)**: tick một hoặc nhiều ô **Ổ gốc**, **Google Drive**, **SMB/Samba** — phải chọn ít nhất một nơi:
+- **Nơi lưu bản ghi (trong Sửa camera)**: tick một hoặc nhiều ô **Ổ gốc**, **Google Drive**, **SMB/Samba** — phải chọn ít nhất một nơi. Ô **Google Drive** / **SMB/Samba** chỉ bật được khi dịch vụ tương ứng đã cấu hình và đang bật; nếu chưa, ô bị khoá và camera mặc định chỉ lưu **Ổ gốc**:
   - **Ổ gốc**: giữ bản ghi trên ổ NVR.
   - **Google Drive**: tải lên Drive nếu đã bật; bỏ **Ổ gốc** thì LiteNVR xoá bản gốc sau khi tải xong. Nếu Drive chưa bật/mất kết nối, camera vẫn ghi tạm ra ổ cứng và tải lên ngay khi Drive hoạt động lại (không mất dữ liệu).
   - **SMB/Samba**: sao lưu sang share SMB đã cấu hình ở **💾 Lưu trữ ngoài**; bỏ **Ổ gốc** thì xoá bản gốc sau khi chuyển xong. Nếu chọn cả Drive + SMB mà không giữ ổ gốc, LiteNVR giữ bản gốc tới khi cả hai đích nhận xong.
@@ -212,6 +212,9 @@ rest_command:
 Nếu chạy ZimaOS và muốn cấu hình "chuẩn" như bản đang chạy (cổng **9895**, WebRTC **8556 TCP/UDP**, ổ `/DATA/NVR`, giới hạn **1 CPU / 4GB RAM**, tmpfs cho HLS + buffer), dùng file **`docker-compose.zimaos.yml`**:
 - `GO2RTC=on`: bật go2rtc nội bộ để dùng chung một phiên camera cho ghi hình + WebRTC. Nếu bạn **đã có go2rtc trong Frigate** và muốn LiteNVR chỉ ghi hình, có thể đổi thành `GO2RTC=off` (khi đó live dùng HLS như cũ, không có WebRTC).
 - `LIVE_MAX_HEIGHT=720`: live H.265/HEVC được hạ về 720p cho nhẹ CPU (bản ghi vẫn giữ nguyên gốc). Đặt `0` để giữ nguyên.
+- `PLAYBACK_TRANSCODE_MAX=2`: số ffmpeg chuyển mã xem lại chạy đồng thời (kẹp 1–4).
+- `PLAYBACK_PRESET=ultrafast`, `PLAYBACK_CRF=23`: preset/chất lượng khi chuyển mã xem lại; preset nhanh giúp giảm CPU, CRF thấp hơn cho nét hơn.
+- `PLAYBACK_CACHE_MB=2048`, `PLAYBACK_CACHE_TTL_SEC=3600`: giới hạn dung lượng và thời gian giữ cache SMB dùng để dò/chuyển mã xem lại.
 - `CAMERA_MAX_RSS_MB=900`: tự khởi động lại ffmpeg camera nếu RAM vượt ngưỡng (chống rò rỉ/quá tải). `0` để tắt; `CAMERA_RSS_GRACE_SEC=60` là thời gian chờ trước khi kiểm tra.
 - Giới hạn `cpus: "1.00"` phù hợp box yếu; muốn live mượt hơn với nhiều camera HEVC thì nâng lên `"2.00"`.
 
