@@ -41,7 +41,7 @@ mimetypes.add_type("video/mp2t", ".ts")
 NVR_USER = os.environ.get("NVR_USER", "admin")
 NVR_PASS = os.environ.get("NVR_PASS", "admin")
 AUTH_ENABLED = os.environ.get("NVR_AUTH", "on").lower() not in ("off", "0", "false", "no")
-APP_VERSION = (os.environ.get("LITENVR_VERSION") or "1.9.11").strip() or "1.9.11"
+APP_VERSION = (os.environ.get("LITENVR_VERSION") or "1.9.12").strip() or "1.9.12"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 _STATIC_CAND = os.path.join(BASE_DIR, "static")
@@ -1873,6 +1873,10 @@ def _input_args(url: str, cam_info: dict) -> List[str]:
             "-rtsp_flags", "prefer_tcp",
             "-timeout", "10000000",
         ]
+        if str(cam_info.get("audio_mode", "aac")).lower() == "none":
+            # Camera/NVR có audio AAC lỗi AU headers: không yêu cầu audio để
+            # FFmpeg không chờ/parse audio và HLS/ghi hình không bị treo.
+            args += ["-allowed_media_types", "video"]
     return args
 
 

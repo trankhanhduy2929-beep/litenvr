@@ -1329,6 +1329,10 @@ class BuilderTests(unittest.TestCase):
         self.assertEqual(self._values(opts, "-threads"), ["2"])
         self.assertEqual(self._values(opts, "-rtsp_transport"), ["udp"])
         self.assertNotIn("-rtsp_transport", self.m._input_args("http://cam.invalid/x", {}))
+        no_audio = self.m._input_args("rtsp://cam.invalid/main", {"rtsp_transport": "tcp", "audio_mode": "none"})
+        self.assertEqual(self._values(no_audio, "-allowed_media_types"), ["video"])
+        with_audio = self.m._input_args("rtsp://cam.invalid/main", {"rtsp_transport": "tcp", "audio_mode": "aac"})
+        self.assertNotIn("-allowed_media_types", with_audio)
 
     def test_only_required_sources(self):
         base = self.m.build_ffmpeg_cmd("cam", self._cam(record_mode="continuous", video_codec="copy"), include_live=False)
