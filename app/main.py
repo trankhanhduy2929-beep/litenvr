@@ -932,8 +932,8 @@ def resolve_auth(request: Request) -> tuple:
 
 def cam_path_segment(path: str) -> Optional[str]:
     for prefix in ("/hls/", "/recordings/", "/snapshots/", "/api/live/", "/api/status/",
-                   "/api/timeline/", "/api/play/", "/api/drive/play/", "/api/export/",
-                   "/api/thumb/", "/api/ptz/", "/api/locks/"):
+                   "/api/timeline/", "/api/play/", "/api/drive/play/", "/api/smb/play/",
+                   "/api/export/", "/api/thumb/", "/api/ptz/", "/api/locks/"):
         if path.startswith(prefix):
             rest = path[len(prefix):]
             seg = rest.split("/", 1)[0]
@@ -965,8 +965,8 @@ def path_permission(request: Request) -> Optional[str]:
         return "live"
     if path.startswith(("/api/events",)):
         return "events"
-    if path.startswith(("/api/play/", "/api/timeline/", "/api/recording_days/", "/api/thumb/",
-                        "/recordings/", "/api/latest_snapshots")):
+    if path.startswith(("/api/play/", "/api/smb/play/", "/api/timeline/", "/api/recording_days/",
+                        "/api/thumb/", "/recordings/", "/api/latest_snapshots")):
         return "playback"
     if path.startswith("/snapshots/"):
         return "view"
@@ -4387,12 +4387,17 @@ def test_hass_connection(settings: HassSettings):
         raise HTTPException(status_code=400, detail=f"Không kết nối được HA: {e}")
 
 @app.get("/api/timeline/{cam_id}")
-def get_timeline(cam_id: str, date: str):
+def get_timeline(cam_id: str, date: str, source: str = "auto"):
+    if source not in ("auto", "local", "drive", "smb"):
+        raise HTTPException(status_code=400, detail="Nguồn phát lại không hợp lệ")
+    if not re.match(r"^\d{4}-\d{2}-\d{2}$", date or ""):
+        raise HTTPException(status_code=400, detail="Ngày không hợp lệ")
+    cam_id = os.path.basename(cam_id)
     cam_rec_dir = os.path.join(RECORDINGS_DIR, cam_id)
     segments = []
     local_names = set()
     locked = locked_paths()
-    if os.path.exists(cam_rec_dir):
+    if source in ("auto", "local") and os.path.exists(cam_rec_dir):
         for fname in sorted(os.listdir(cam_rec_dir)):
             if fname.startswith(date) and fname.endswith(".mp4"):
                 try:
@@ -4402,39 +4407,64 @@ def get_timeline(cam_id: str, date: str):
                     local_names.add(fname)
                     segments.append({
                         "file": f"recordings/{cam_id}/{fname}",
+                        "cam": cam_id,
                         "fname": fname,
                         "time": time_part.replace("-", ":"),
                         "start_sec": start_sec,
                         "locked": f"{cam_id}/{fname}" in locked,
                         "drive": False,
+                        "smb": False,
                     })
                 except Exception:
                     pass
 
     # Bổ sung các đoạn chỉ còn trên Google Drive (đã tải lên, đã xoá khỏi ổ cứng)
-    try:
-        rows = db_conn().execute(
-            "SELECT name FROM drive_uploads WHERE cam_id=? AND status='done' AND name GLOB ? ORDER BY name",
-            (cam_id, date + "_*.mp4")).fetchall()
-    except Exception:
-        rows = []
-    for (fname,) in rows:
-        if fname in local_names:
-            continue
+    if source in ("auto", "drive"):
         try:
-            time_part = fname.replace(".mp4", "").split("_")[1]
-            h, m, s = map(int, time_part.split("-"))
-            start_sec = h * 3600 + m * 60 + s
+            rows = db_conn().execute(
+                "SELECT name FROM drive_uploads WHERE cam_id=? AND status='done' AND name GLOB ? ORDER BY name",
+                (cam_id, date + "_*.mp4")).fetchall()
         except Exception:
-            continue
-        segments.append({
-            "file": f"api/play/{cam_id}/{fname}",
-            "fname": fname,
-            "time": time_part.replace("-", ":"),
-            "start_sec": start_sec,
-            "locked": f"{cam_id}/{fname}" in locked,
-            "drive": True,
-        })
+            rows = []
+        for (fname,) in rows:
+            if fname in local_names:
+                continue
+            try:
+                time_part = fname.replace(".mp4", "").split("_")[1]
+                h, m, s = map(int, time_part.split("-"))
+                start_sec = h * 3600 + m * 60 + s
+            except Exception:
+                continue
+            segments.append({
+                "file": f"api/play/{cam_id}/{fname}",
+                "cam": cam_id,
+                "fname": fname,
+                "time": time_part.replace("-", ":"),
+                "start_sec": start_sec,
+                "locked": f"{cam_id}/{fname}" in locked,
+                "drive": True,
+                "smb": False,
+            })
+
+    # Chỉ đọc danh sách SMB khi người dùng chọn đúng nguồn (tránh chậm timeline).
+    if source == "smb":
+        for fname in _smb_list_recordings(cam_id, date):
+            try:
+                time_part = fname.replace(".mp4", "").split("_")[1]
+                h, m, s = map(int, time_part.split("-"))
+                start_sec = h * 3600 + m * 60 + s
+            except Exception:
+                continue
+            segments.append({
+                "file": f"api/smb/play/{urllib.parse.quote(cam_id)}/{date}/{urllib.parse.quote(fname)}",
+                "cam": cam_id,
+                "fname": fname,
+                "time": time_part.replace("-", ":"),
+                "start_sec": start_sec,
+                "locked": False,
+                "drive": False,
+                "smb": True,
+            })
     segments.sort(key=lambda s: s["start_sec"])
 
     conn = db_conn()
@@ -4812,6 +4842,17 @@ class SmbTarget:
         with open(src, "rb") as srcf, self._client.open_file(dest, "wb") as dstf:
             shutil.copyfileobj(srcf, dstf, 1024 * 1024)
 
+    def list_recordings(self, day: str, cam: str) -> List[str]:
+        try:
+            names = self._client.listdir(self.path(day, cam))
+        except Exception:
+            return []
+        return sorted(n for n in names
+                      if n.endswith(".mp4") and n.startswith(day + "_"))
+
+    def open_recording(self, day: str, cam: str, fname: str):
+        return self._client.open_file(self.path(day, cam, fname), "rb")
+
     def probe(self):
         if self._base:
             self.ensure_dir(self.path())
@@ -4825,6 +4866,31 @@ class SmbTarget:
             self._client.delete_session(self._host, port=self._port)
         except Exception:
             pass
+
+
+def _smb_target_for_playback() -> Optional[SmbTarget]:
+    """Trả về kết nối SMB nếu backup đang cấu hình SMB; None nếu chưa dùng SMB."""
+    cfg = _backup_cfg()
+    if str(cfg.get("kind") or "") != "smb":
+        return None
+    if not (cfg.get("smb_host") or "").strip() or not (cfg.get("smb_share") or "").strip():
+        return None
+    return SmbTarget(cfg)
+
+
+def _smb_list_recordings(cam: str, day: str) -> List[str]:
+    target = None
+    try:
+        target = _smb_target_for_playback()
+        if not target:
+            return []
+        return target.list_recordings(day, os.path.basename(cam))
+    except Exception as e:
+        log_event("warn", f"Không đọc được danh sách bản ghi SMB: {mask_secrets(str(e))}")
+        return []
+    finally:
+        if target:
+            target.close()
 
 
 def backup_scan() -> List[str]:
@@ -6405,6 +6471,78 @@ class _TranscodedRecordingResponse(StreamingResponse):
             if self.proc:
                 with anyio.CancelScope(shield=True):
                     await _stop_playback_process(self.proc)
+
+
+def _range_bounds(header: str, size: int):
+    """Trả (start, length, partial) cho một Range đơn; raise 416 nếu không hợp lệ."""
+    if not header:
+        return 0, size, False
+    m = re.match(r"^bytes=(\d*)-(\d*)$", header.strip())
+    if not m:
+        raise HTTPException(status_code=416, detail="Range không hợp lệ",
+                            headers={"Content-Range": f"bytes */{size}"})
+    first, last = m.group(1), m.group(2)
+    if not first:
+        if not last:
+            raise HTTPException(status_code=416, detail="Range không hợp lệ",
+                                headers={"Content-Range": f"bytes */{size}"})
+        length = min(int(last), size)
+        start = max(0, size - length)
+        return start, length, True
+    start = int(first)
+    if start >= size:
+        raise HTTPException(status_code=416, detail="Range ngoài file",
+                            headers={"Content-Range": f"bytes */{size}"})
+    end = int(last) if last else size - 1
+    if end < start:
+        raise HTTPException(status_code=416, detail="Range không hợp lệ",
+                            headers={"Content-Range": f"bytes */{size}"})
+    end = min(end, size - 1)
+    return start, end - start + 1, True
+
+
+@app.get("/api/smb/play/{cam_id}/{date}/{fname}")
+def play_smb_recording(cam_id: str, date: str, fname: str, request: Request):
+    """Phát bản ghi trực tiếp từ SMB/Samba, hỗ trợ Range để tua trong trình duyệt."""
+    cam = os.path.basename(cam_id)
+    name = os.path.basename(fname)
+    if not re.match(r"^\d{4}-\d{2}-\d{2}$", date or "") or not REC_NAME_RE.match(name):
+        raise HTTPException(status_code=400, detail="Tên bản ghi không hợp lệ")
+    target = _smb_target_for_playback()
+    if not target:
+        raise HTTPException(status_code=400, detail="Chưa cấu hình lưu trữ ngoài SMB")
+    try:
+        fh = target.open_recording(date, cam, name)
+        size = fh.seek(0, os.SEEK_END)
+        fh.seek(0)
+    except Exception as e:
+        target.close()
+        log_event("warn", f"Không mở được bản ghi SMB: {mask_secrets(str(e))}", cam)
+        raise HTTPException(status_code=404, detail="Không tìm thấy bản ghi trên SMB")
+    start, length, partial = _range_bounds(request.headers.get("range", ""), size)
+    headers = {"Accept-Ranges": "bytes", "Cache-Control": "no-store",
+               "Content-Length": str(length)}
+    if partial:
+        headers["Content-Range"] = f"bytes {start}-{start + length - 1}/{size}"
+
+    def iter_file():
+        try:
+            fh.seek(start)
+            left = length
+            while left > 0:
+                chunk = fh.read(min(1024 * 1024, left))
+                if not chunk:
+                    break
+                left -= len(chunk)
+                yield chunk
+        finally:
+            try:
+                fh.close()
+            finally:
+                target.close()
+
+    return StreamingResponse(iter_file(), status_code=206 if partial else 200,
+                             media_type="video/mp4", headers=headers)
 
 
 @app.get("/api/play/{cam_id}/{fname}")

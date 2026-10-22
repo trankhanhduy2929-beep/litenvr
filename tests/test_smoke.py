@@ -177,6 +177,71 @@ class ApiTests(_AppCase):
         self.assertEqual(r.status_code, 200)
         self.assertIn("segments", r.json())
 
+    def test_timeline_source_filter_and_smb_guard(self):
+        cam = "srccam"
+        self.client.post("/api/cameras", json={"cam_id": cam, "name": "Src",
+                                               "rtsp_url": "rtsp://127.0.0.1:1/x",
+                                               "record_mode": "off"}, headers=auth())
+        day = "2026-06-01"
+        cam_dir = os.path.join(self.m.RECORDINGS_DIR, cam)
+        os.makedirs(cam_dir, exist_ok=True)
+        local_name = f"{day}_08-00-00.mp4"
+        drive_name = f"{day}_09-00-00.mp4"
+        with open(os.path.join(cam_dir, local_name), "wb") as f:
+            f.write(b"")
+        conn = self.m.db_conn()
+        conn.execute("INSERT OR REPLACE INTO drive_uploads "
+                     "(path, cam_id, name, ts, size, status, tries, next_try, updated) "
+                     "VALUES (?,?,?,?,?, 'done', 0, 0, ?)",
+                     (f"{cam}/{drive_name}", cam, drive_name, 0, 0, 0))
+        conn.commit()
+        self.client.post("/api/backup", json={"enabled": False, "kind": "folder"}, headers=auth())
+
+        def names(source):
+            r = self.client.get(f"/api/timeline/{cam}?date={day}&source={source}", headers=auth())
+            self.assertEqual(r.status_code, 200, r.text)
+            return [s["fname"] for s in r.json()["segments"]]
+
+        self.assertEqual(names("local"), [local_name])
+        self.assertEqual(names("drive"), [drive_name])
+        self.assertEqual(names("auto"), [local_name, drive_name])
+        with mock.patch.object(self.m, "_smb_list_recordings", return_value=[drive_name]):
+            self.assertEqual(names("smb"), [drive_name])
+        self.assertEqual(self.client.get(f"/api/timeline/{cam}?date={day}&source=bad",
+                                         headers=auth()).status_code, 400)
+        self.assertEqual(self.client.get(f"/api/timeline/{cam}?date=bad&source=local",
+                                         headers=auth()).status_code, 400)
+        self.assertEqual(self.client.get(
+            f"/api/smb/play/{cam}/{day}/{local_name}", headers=auth()).status_code, 400)
+
+        class FakeFH:
+            def __init__(self, data):
+                self.data = data
+                self.pos = 0
+                self.closed = False
+            def seek(self, offset, whence=0):
+                self.pos = len(self.data) if whence == os.SEEK_END else offset
+                return self.pos
+            def read(self, n=-1):
+                chunk = self.data[self.pos:self.pos + n]
+                self.pos += len(chunk)
+                return chunk
+            def close(self):
+                self.closed = True
+
+        fake_fh = FakeFH(b"0123456789")
+        fake_target = mock.Mock()
+        fake_target.open_recording.return_value = fake_fh
+        with mock.patch.object(self.m, "_smb_target_for_playback", return_value=fake_target):
+            r = self.client.get(f"/api/smb/play/{cam}/{day}/{drive_name}",
+                                headers={**auth(), "Range": "bytes=2-5"})
+        self.assertEqual(r.status_code, 206, r.text)
+        self.assertEqual(r.content, b"2345")
+        self.assertEqual(r.headers["content-range"], "bytes 2-5/10")
+        self.assertTrue(fake_fh.closed)
+        fake_target.close.assert_called()
+        self.client.delete(f"/api/cameras/{cam}", headers=auth())
+
     def test_ram_hygiene_moves_thumbs_to_disk_and_cleans_orphans(self):
         self.assertFalse(self.m.THUMBS_DIR.startswith("/dev/shm"))
         self.assertTrue(self.m.THUMBS_DIR.startswith(self.m.STORAGE_DIR))

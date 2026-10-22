@@ -139,6 +139,17 @@ Bấm **💾 Lưu trữ ngoài (SMB/FTP)** (admin) để tự động chuyển c
 - **Sau khi chuyển**: `copy` giữ bản gốc trên NVR; `move` **xoá bản ghi khỏi ổ NVR** sau khi chuyển thành công, chỉ còn dữ liệu trên máy chủ ngoài. Nếu camera đang chờ tải lên Google Drive, LiteNVR tạm hoãn chuyển để không mất file.
 - **Camera**: bỏ trống = tất cả. Bản ghi **đang ghi** (mới hơn 30 giây), bản ghi **đã chuyển** và bản ghi **đang khoá** sẽ bị bỏ qua; file thành công được ghi nhận để không chuyển lại.
 - Nút **🔌 Kiểm tra đích** thử ghi file hoặc kết nối SMB/FTP. API: `GET/POST /api/backup`, `POST /api/backup/test`.
+- **Xem lại trực tiếp từ SMB**: trên dòng thời gian chọn **Nguồn phát → Chỉ SMB/Samba**; LiteNVR liệt kê file trong `<thư mục con>/YYYY-MM-DD/<mã camera>` và stream qua HTTP Range để tua mà không tải cả file. Chỉ áp dụng khi kiểu lưu trữ ngoài là SMB (không áp dụng cho thư mục mount/FTP), và trình duyệt phải phát được codec gốc (H.264).
+
+## Chọn nguồn phát lại
+
+Ô **Nguồn phát** ngay trên dòng thời gian cho phép chọn nơi đọc bản ghi khi tua/xem:
+- **Tự động (ổ gốc + Drive)**: mặc định, ưu tiên file trên ổ cứng và bổ sung đoạn chỉ còn trên Drive.
+- **Chỉ ổ gốc**: chỉ bản ghi còn trong `/storage/recordings`.
+- **Chỉ Google Drive**: chỉ đoạn đã sao lưu Drive; bấm xem sẽ tải về ổ cứng trước khi phát.
+- **Chỉ SMB/Samba**: đọc trực tiếp từ share SMB đã cấu hình, có hỗ trợ Range để tua.
+
+API timeline nhận thêm `source=auto|local|drive|smb`: `GET /api/timeline/<cam_id>?date=YYYY-MM-DD&source=drive`.
 
 ## Sao lưu 24/7 lên Google Drive (tự dọn khi đầy)
 Bấm **☁️ Google Drive** (chỉ tài khoản admin) để bật tính năng: mọi đoạn ghi hoàn chỉnh sẽ **tự động tải lên Drive 24/7** vào thư mục `LiteNVR/YYYY-MM-DD/<tên camera>` (tự tạo, chia theo ngày cho dễ tìm). Khi Drive đầy, LiteNVR **tự xoá các file cũ nhất do chính nó tải lên** (xoá vĩnh viễn, không vào thùng rác, để giải phóng dung lượng ngay) rồi tiếp tục tải. File đang được ghi sẽ không bị đụng tới; file lỗi được **thử lại tự động** (5 lần, chờ tăng dần).

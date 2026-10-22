@@ -1195,6 +1195,36 @@
 
     .tl-zoom button:disabled { opacity: 0.35; cursor: default; }
 
+    .tl-source {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      min-height: 32px;
+      padding: 2px 4px 2px 10px;
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
+      background: var(--bg-elevated, rgba(2, 6, 23, 0.4));
+      font-size: 12px;
+      color: var(--text-muted);
+      white-space: nowrap;
+    }
+
+    .tl-source select {
+      min-height: 26px;
+      padding: 2px 6px;
+      border: 0;
+      border-radius: 6px;
+      background: transparent;
+      color: var(--text-main);
+      font-size: 12px;
+      font-weight: 600;
+    }
+
+    .tl-source select:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }
+
     .timeline-bar {
       height: 30px;
       background: #0b0f17;
@@ -2165,6 +2195,8 @@
       .grid-view, .grid-view.g9 { grid-template-columns: 1fr; padding: 0 10px; }
       .player-box { width: 100%; max-width: 100%; border-radius: 0; border-left: 0; border-right: 0; margin: 10px 0; }
       .timeline-container { margin: 10px; padding: 12px; }
+      .tl-source { flex: 1 1 100%; justify-content: space-between; }
+      .tl-source select { flex: 1 1 auto; }
       .timeline-bar { height: 36px; }
       .cursor-handle { height: 48px; top: -6px; width: 12px; margin-left: -6px; }
       .events-list { grid-template-columns: 1fr; padding: 0 10px; gap: 10px; }
@@ -2386,6 +2418,15 @@
   <div class="timeline-container">
     <div class="tl-top">
       <div class="tl-ticks" id="tlTicks" aria-hidden="true"><span>00:00</span><span>06:00</span><span>12:00</span><span>18:00</span><span>24:00</span></div>
+      <div class="tl-source">
+        <label for="playbackSource">Nguồn phát</label>
+        <select id="playbackSource" onchange="setPlaybackSource(this.value)" title="Chọn nơi đọc bản ghi khi tua/xem lại">
+          <option value="auto">Tự động (ổ gốc + Drive)</option>
+          <option value="local">Chỉ ổ gốc</option>
+          <option value="drive">Chỉ Google Drive</option>
+          <option value="smb">Chỉ SMB/Samba</option>
+        </select>
+      </div>
       <div class="tl-zoom" role="group" aria-label="Thu phóng dòng thời gian">
         <button type="button" id="tlPanPrev" onclick="panTimeline(-1)" aria-label="Lùi khung giờ" title="Lùi khung giờ">‹</button>
         <button type="button" data-tlzoom="86400" class="active" onclick="setTimelineZoom(86400)" aria-pressed="true">24h</button>
@@ -3283,6 +3324,28 @@
     let _uiTimersStarted = false;
     let lastCursorSec = 0;
     let timelineZoom = 86400, timelineStart = 0, postMotionSec = 60, _tlViewKey = "";
+    const PLAYBACK_SOURCES = ["auto", "local", "drive", "smb"];
+    let playbackSource = (() => {
+      try {
+        const v = localStorage.getItem("nvrPlaybackSource") || "auto";
+        return PLAYBACK_SOURCES.includes(v) ? v : "auto";
+      } catch (e) { return "auto"; }
+    })();
+
+    function setPlaybackSource(value) {
+      if (!PLAYBACK_SOURCES.includes(value) || value === playbackSource) return;
+      playbackSource = value;
+      try { localStorage.setItem("nvrPlaybackSource", value); } catch (e) {}
+      stopDriveFetchPoll();
+      _tlViewKey = "";
+      const sel = document.getElementById("playbackSource");
+      if (sel) sel.value = value;
+      loadTimeline();
+    }
+
+    function segSourceLabel(seg) {
+      return seg && seg.smb ? "SMB/Samba" : (seg && seg.drive ? "Google Drive" : "ổ gốc");
+    }
     const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
     const video = document.getElementById("videoPlayer");
     function updateAudioBtn() {
@@ -3906,6 +3969,8 @@
         return;
       }
       wirePlayerControls();
+      const sourceSelect = document.getElementById("playbackSource");
+      if (sourceSelect) sourceSelect.value = playbackSource;
       await refreshSnapshots();
       renderCamStrip();
       refreshCamStatuses();
@@ -5059,7 +5124,7 @@
         timelineZoom = 86400;
         timelineStart = 0;
       }
-      const res = await fetch(`api/timeline/${encodeURIComponent(currentCam)}?date=${dateInput.value}`);
+      const res = await fetch(`api/timeline/${encodeURIComponent(currentCam)}?date=${encodeURIComponent(dateInput.value)}&source=${encodeURIComponent(playbackSource)}`);
       if (!res.ok) {
         segments = [];
         dayEvents = [];
@@ -5226,7 +5291,7 @@
       if (tip) { tip.style.left = pct + "%"; tip.textContent = fmtHMS(sec); }
       const thumb = document.getElementById("segThumb");
       if (thumb) {
-        const seg = showTip ? segments.filter(s => !s.drive && s.start_sec <= sec).pop() : null;
+        const seg = showTip ? segments.filter(s => !s.drive && !s.smb && s.start_sec <= sec).pop() : null;
         if (seg) {
           if (thumb.dataset.seg !== seg.fname) {
             thumb.dataset.seg = seg.fname;
@@ -5769,14 +5834,18 @@
       stopLiveHeartbeat();
       const seg = segments[idx];
       const parts = seg.file.split("/");
-      const cam = parts[2] || currentCam;
+      const cam = seg.cam || parts[2] || currentCam;
       const fname = seg.fname || parts[parts.length - 1];
       const transUrl = `api/play/${encodeURIComponent(cam)}/${encodeURIComponent(fname)}?t=1&ss=${Math.max(0, offset || 0).toFixed(2)}`;
 
       currentSegStartSec = seg.start_sec;
-      document.getElementById("statusText").textContent = seg.drive
-        ? `☁️ Bản ghi trên Drive — đang tải về… (${seg.time})`
-        : `Phát lại: ${seg.time}`;
+      if (seg.drive) {
+        document.getElementById("statusText").textContent = `☁️ Bản ghi trên Drive — đang tải về… (${seg.time})`;
+      } else if (seg.smb) {
+        document.getElementById("statusText").textContent = `📁 Đang phát từ SMB/Samba: ${seg.time}`;
+      } else {
+        document.getElementById("statusText").textContent = `Phát lại: ${seg.time}`;
+      }
       if (seg.drive) pollDriveFetch(cam, fname); else stopDriveFetchPoll();
       let triedTranscode = false;
 
@@ -5788,10 +5857,11 @@
         video.onloadedmetadata = null;
         stopDriveFetchPoll();
         if (seg.drive) document.getElementById("statusText").textContent = `☁️ Phát lại từ Drive: ${seg.time}`;
+        else if (seg.smb) document.getElementById("statusText").textContent = `📁 Phát lại từ SMB/Samba: ${seg.time}`;
         startAt();
       };
       video.onerror = () => {
-        if (!triedTranscode) {
+        if (!triedTranscode && !seg.smb) {
           triedTranscode = true;
           document.getElementById("statusText").textContent =
             "Đang chuyển mã sang H.264 để phát (camera H.265)...";
@@ -5804,9 +5874,10 @@
           video.src = transUrl;
         } else {
           stopDriveFetchPoll();
-          document.getElementById("statusText").textContent =
-            "Không phát được bản ghi này. Bấm 🔍 Chẩn đoán để xem lỗi.";
-          __clientLog("error", "Không phát được bản ghi: " + seg.file);
+          document.getElementById("statusText").textContent = seg.smb
+            ? "Không phát được bản ghi từ SMB/Samba. Kiểm tra cấu hình SMB và định dạng H.264."
+            : "Không phát được bản ghi này. Bấm 🔍 Chẩn đoán để xem lỗi.";
+          __clientLog("error", "Không phát được bản ghi (" + segSourceLabel(seg) + "): " + seg.file);
         }
       };
       video.src = seg.file;
