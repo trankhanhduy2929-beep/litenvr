@@ -223,7 +223,7 @@ Bấm **☁️ Google Drive** (chỉ tài khoản admin) để bật tính năng
   - Camera không chọn **Google Drive** sẽ bị khoá trong danh sách *Camera sao lưu* của hộp thoại Drive. Mặc định camera mới: chỉ **Ổ gốc**.
 - **Xem lại bản ghi trên Drive**: bản ghi đã sao lưu (kể cả đã xoá khỏi ổ cứng) vẫn hiện trong tab **Xem lại** với vạch màu xanh ☁️ trên thanh thời gian. Khi bấm phát/tua, LiteNVR **tự tải đoạn đó từ Drive về** (hiện % đang tải ở dòng trạng thái), sau đó phát và tua như bản ghi thường; đoạn đã tải được giữ trên ổ cứng làm cache (tự dọn theo dung lượng/ngày lưu). Nút **⬇️ Xuất clip** quanh sự kiện cũng tự tải các đoạn trên Drive nếu thiếu.
 - **Giới hạn tốc độ**: chừa băng thông internet (Mbps), để 0 = không giới hạn.
-- **Số file tải cùng lúc**: 1–8 file. Tăng khi mạng khoẻ; giới hạn tốc độ được chia đều. Google Drive vẫn giới hạn **750 GB/ngày/tài khoản**, vượt mức sẽ bị lỗi tạm thời và tự thử lại.
+- **Số file tải cùng lúc**: 1–64 file, tự đặt theo số camera và độ mạnh mạng. Tăng khi mạng khoẻ; giới hạn tốc độ được chia đều. Google Drive vẫn giới hạn **750 GB/ngày/tài khoản**, vượt mức sẽ bị lỗi tạm thời và tự thử lại.
 - **Giới hạn dung lượng LiteNVR trên Drive (GB)**: 0 = không giới hạn; vượt mức → tự xoá cũ nhất.
 - **Chừa trống tối thiểu trên Drive (MB)**: Drive còn ít hơn mức này → tự xoá cũ nhất (tối thiểu 200MB).
 - **Tải bù theo ngày**: đẩy các bản ghi cũ (trước khi bật) lên Drive theo khoảng ngày — có thể rất nhiều, nên chạy vào lúc rảnh.

@@ -78,7 +78,7 @@ DRIVE_SCOPE = os.environ.get("NVR_DRIVE_SCOPE", "https://www.googleapis.com/auth
 DRIVE_TICK = float(os.environ.get("NVR_DRIVE_TICK", "20"))
 DRIVE_CHUNK = int(os.environ.get("NVR_DRIVE_CHUNK", str(16 * 1024 * 1024)))
 DRIVE_RETRY_BASE = float(os.environ.get("NVR_DRIVE_RETRY_BASE", "60"))
-DRIVE_MAX_PARALLEL = 8
+DRIVE_MAX_PARALLEL = 64
 
 for d in [RECORDINGS_DIR, SNAPSHOTS_DIR, HLS_DIR, PLAYBACK_HLS_DIR, BUFFER_DIR, THUMBS_DIR, PLAYBACK_CACHE_DIR, MQTT_SNAPSHOT_DIR]:
     os.makedirs(d, exist_ok=True)

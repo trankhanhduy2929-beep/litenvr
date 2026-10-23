@@ -3212,18 +3212,7 @@
       <div id="drvCamList" class="perm-grid"></div>
       <div class="grid-2" style="margin-top:10px;">
         <label>Giới hạn tốc độ tải lên (Mbps — 0 = không giới hạn) <input type="number" id="drvBandwidth" min="0" step="1"></label>
-        <label>Số file tải lên cùng lúc
-          <select id="drvParallel">
-            <option value="1">1 file (tuần tự)</option>
-            <option value="2">2 file</option>
-            <option value="3">3 file</option>
-            <option value="4">4 file</option>
-            <option value="5">5 file</option>
-            <option value="6">6 file</option>
-            <option value="7">7 file</option>
-            <option value="8">8 file</option>
-          </select>
-        </label>
+        <label>Số file tải lên cùng lúc (1–64) <input type="number" id="drvParallel" min="1" max="64" step="1" inputmode="numeric"></label>
         <label>Giới hạn dung lượng NVR dùng (GB — 0 = dùng tới khi Drive gần đầy) <input type="number" id="drvMaxGb" min="0" step="50"></label>
         <label>Dọn file cũ nhất khi Drive còn trống dưới (MB) <input type="number" id="drvMinFree" min="200" step="500"></label>
       </div>
@@ -8038,7 +8027,7 @@
         folder_name: (_drvData && _drvData.folder_name) || "LiteNVR",
         cameras: cams,
         bandwidth_kbps: bw,
-        parallel_uploads: parseInt(document.getElementById("drvParallel").value || "1", 10),
+        parallel_uploads: Math.max(1, parseInt(document.getElementById("drvParallel").value || "1", 10) || 1),
         max_gb: Math.max(0, parseFloat(document.getElementById("drvMaxGb").value || "0")),
         min_free_mb: Math.max(200, parseInt(document.getElementById("drvMinFree").value || "2000", 10))
       };

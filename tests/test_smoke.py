@@ -999,7 +999,11 @@ class ApiTests(_AppCase):
     def test_drive_parallel_upload_setting_is_clamped(self):
         old = dict(self.m.CONFIG.get("gdrive") or {})
         try:
-            body = {"enabled": False, "parallel_uploads": 9}
+            body = {"enabled": False, "parallel_uploads": 12}
+            self.assertEqual(self.client.post("/api/drive", json=body, headers=auth()).status_code, 200)
+            self.assertEqual(self.m.CONFIG["gdrive"]["parallel_uploads"], 12)
+            self.assertEqual(self.client.get("/api/drive", headers=auth()).json()["parallel_uploads"], 12)
+            body["parallel_uploads"] = self.m.DRIVE_MAX_PARALLEL + 1
             self.assertEqual(self.client.post("/api/drive", json=body, headers=auth()).status_code, 200)
             self.assertEqual(self.m.CONFIG["gdrive"]["parallel_uploads"], self.m.DRIVE_MAX_PARALLEL)
             self.assertEqual(self.client.get("/api/drive", headers=auth()).json()["parallel_uploads"],
