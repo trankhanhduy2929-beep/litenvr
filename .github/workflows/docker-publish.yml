@@ -9,7 +9,7 @@ env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
   ADDON_IMAGE: ghcr.io/trankhanhduy2929-beep/litenvr_docker_zimaos
-  ADDON_VERSION: "1.9.13"
+  ADDON_VERSION: "1.9.14"
 
 jobs:
   build-and-push:
