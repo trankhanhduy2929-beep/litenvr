@@ -3212,10 +3212,18 @@
       <div id="drvCamList" class="perm-grid"></div>
       <div class="grid-2" style="margin-top:10px;">
         <label>Giới hạn tốc độ tải lên (Mbps — 0 = không giới hạn) <input type="number" id="drvBandwidth" min="0" step="1"></label>
+        <label>Số file tải lên cùng lúc
+          <select id="drvParallel">
+            <option value="1">1 file (tuần tự)</option>
+            <option value="2">2 file</option>
+            <option value="3">3 file</option>
+            <option value="4">4 file</option>
+          </select>
+        </label>
         <label>Giới hạn dung lượng NVR dùng (GB — 0 = dùng tới khi Drive gần đầy) <input type="number" id="drvMaxGb" min="0" step="50"></label>
         <label>Dọn file cũ nhất khi Drive còn trống dưới (MB) <input type="number" id="drvMinFree" min="200" step="500"></label>
       </div>
-      <div style="font-size:12px;color:var(--text-muted);margin-top:6px;">Bản ghi trên Drive tự chia thư mục <b>LiteNVR/YYYY-MM-DD/Tên camera</b> để dễ tìm. Khi đạt giới hạn hoặc Drive sắp đầy: LiteNVR xoá <b>vĩnh viễn</b> file cũ nhất đã tải lên (không vào thùng rác) để dọn chỗ. Bản ghi trên ổ cứng không bị ảnh hưởng.</div>
+      <div style="font-size:12px;color:var(--text-muted);margin-top:6px;">Tăng số file cùng lúc khi mạng khoẻ; giới hạn tốc độ được chia đều cho các file đang tải. Bản ghi trên Drive tự chia thư mục <b>LiteNVR/YYYY-MM-DD/Tên camera</b> để dễ tìm. Khi đạt giới hạn hoặc Drive sắp đầy: LiteNVR xoá <b>vĩnh viễn</b> file cũ nhất đã tải lên (không vào thùng rác) để dọn chỗ. Bản ghi trên ổ cứng không bị ảnh hưởng.</div>
       <div style="display:flex;justify-content:flex-end;margin-top:10px;">
         <button class="primary" onclick="saveDrive()">💾 Lưu cài đặt</button>
       </div>
@@ -7920,6 +7928,7 @@
       const focusId = (document.activeElement || {}).id;
       if (focusId !== "drvEnabled") document.getElementById("drvEnabled").checked = !!d.enabled;
       if (focusId !== "drvBandwidth") document.getElementById("drvBandwidth").value = Math.round((d.bandwidth_kbps || 0) / 1000);
+      if (focusId !== "drvParallel") document.getElementById("drvParallel").value = String(d.parallel_uploads || 1);
       if (focusId !== "drvMaxGb") document.getElementById("drvMaxGb").value = d.max_gb || 0;
       if (focusId !== "drvMinFree") document.getElementById("drvMinFree").value = d.min_free_mb || 2000;
 
@@ -8025,6 +8034,7 @@
         folder_name: (_drvData && _drvData.folder_name) || "LiteNVR",
         cameras: cams,
         bandwidth_kbps: bw,
+        parallel_uploads: parseInt(document.getElementById("drvParallel").value || "1", 10),
         max_gb: Math.max(0, parseFloat(document.getElementById("drvMaxGb").value || "0")),
         min_free_mb: Math.max(200, parseInt(document.getElementById("drvMinFree").value || "2000", 10))
       };

@@ -996,6 +996,20 @@ class ApiTests(_AppCase):
         self.assertIsNone(conn.execute("SELECT 1 FROM drive_uploads WHERE path=?",
                                        (f"{cam}/{fresh}",)).fetchone())
 
+    def test_drive_parallel_upload_setting_is_clamped(self):
+        old = dict(self.m.CONFIG.get("gdrive") or {})
+        try:
+            body = {"enabled": False, "parallel_uploads": 9}
+            self.assertEqual(self.client.post("/api/drive", json=body, headers=auth()).status_code, 200)
+            self.assertEqual(self.m.CONFIG["gdrive"]["parallel_uploads"], self.m.DRIVE_MAX_PARALLEL)
+            self.assertEqual(self.client.get("/api/drive", headers=auth()).json()["parallel_uploads"],
+                             self.m.DRIVE_MAX_PARALLEL)
+            body["parallel_uploads"] = 0
+            self.assertEqual(self.client.post("/api/drive", json=body, headers=auth()).status_code, 200)
+            self.assertEqual(self.m.CONFIG["gdrive"]["parallel_uploads"], 1)
+        finally:
+            self.m.CONFIG["gdrive"] = old
+
     def test_cleanup_keeps_locked_pending_and_active_files(self):
         cam = "cleancam"
         self.client.post("/api/cameras", json={"cam_id": cam, "name": "Clean",

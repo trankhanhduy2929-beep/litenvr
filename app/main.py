@@ -78,6 +78,7 @@ DRIVE_SCOPE = os.environ.get("NVR_DRIVE_SCOPE", "https://www.googleapis.com/auth
 DRIVE_TICK = float(os.environ.get("NVR_DRIVE_TICK", "20"))
 DRIVE_CHUNK = int(os.environ.get("NVR_DRIVE_CHUNK", str(16 * 1024 * 1024)))
 DRIVE_RETRY_BASE = float(os.environ.get("NVR_DRIVE_RETRY_BASE", "60"))
+DRIVE_MAX_PARALLEL = 4
 
 for d in [RECORDINGS_DIR, SNAPSHOTS_DIR, HLS_DIR, PLAYBACK_HLS_DIR, BUFFER_DIR, THUMBS_DIR, PLAYBACK_CACHE_DIR, MQTT_SNAPSHOT_DIR]:
     os.makedirs(d, exist_ok=True)
@@ -411,6 +412,7 @@ DEFAULT_CONFIG = {
         "root_folder_id": "",
         "cameras": [],                # [] = tất cả camera; hoặc danh sách cam_id
         "bandwidth_kbps": 0,          # 0 = không giới hạn tốc độ tải lên
+        "parallel_uploads": 1,        # Số file tải lên Google Drive cùng lúc
         "max_gb": 0,                  # 0 = chỉ dọn khi Drive thật sự gần đầy
         "min_free_mb": 2000,          # Dọn file cũ khi Drive còn trống dưới mức này
         "since_ts": 0                 # Chỉ sao lưu bản ghi mới hơn mốc này (0 = mọi bản ghi)
@@ -6494,13 +6496,16 @@ def drive_cam_folder(cam_id: str) -> str:
     return fid
 
 
+_drive_folder_lock = threading.Lock()
+
 def drive_upload_folder(cam_id: str, day: str) -> str:
-    root_id = drive_root_folder()
-    day_id = drive_ensure_folder(day, root_id)
-    if not cam_id:
-        return day_id
-    cam_name = (CONFIG.get("cameras", {}).get(cam_id) or {}).get("name") or cam_id
-    return drive_ensure_folder(cam_name, day_id)
+    with _drive_folder_lock:
+        root_id = drive_root_folder()
+        day_id = drive_ensure_folder(day, root_id)
+        if not cam_id:
+            return day_id
+        cam_name = (CONFIG.get("cameras", {}).get(cam_id) or {}).get("name") or cam_id
+        return drive_ensure_folder(cam_name, day_id)
 
 
 def drive_upload_file(local_path: str, name: str, parent_id: str, kbps: int = 0) -> dict:
@@ -6904,7 +6909,11 @@ def drive_process_row(row) -> str:
         day = _recording_day(row["name"], float(row["ts"] or 0))
         folder_id = drive_upload_folder(row["cam_id"], day)
         size = os.path.getsize(local_path)
-        res = drive_upload_file(local_path, row["name"], folder_id, int(g.get("bandwidth_kbps") or 0))
+        kbps = int(g.get("bandwidth_kbps") or 0)
+        parallel = max(1, min(DRIVE_MAX_PARALLEL, int(g.get("parallel_uploads") or 1)))
+        if kbps > 0 and parallel > 1:
+            kbps = max(64, kbps // parallel)
+        res = drive_upload_file(local_path, row["name"], folder_id, kbps)
         conn.execute(
             "UPDATE drive_uploads SET status='done', error='', drive_id=?, size=?, tries=0, next_try=0, updated=? WHERE path=?",
             (res.get("id") or "", size, now, row["path"]))
@@ -6957,6 +6966,25 @@ def drive_mark_retry(conn, row, now: float, err: str) -> str:
     return "pending"
 
 
+_drive_inflight = {}
+_drive_inflight_lock = threading.Lock()
+
+def _drive_upload_thread(row):
+    try:
+        drive_process_row(row)
+    except Exception as e:
+        log_event("error", f"Drive upload lỗi: {str(e)[:200]}")
+        try:
+            conn = db_conn()
+            conn.execute("UPDATE drive_uploads SET status='pending' WHERE path=? AND status='uploading'",
+                         (row["path"],))
+            conn.commit()
+        except Exception:
+            pass
+    finally:
+        with _drive_inflight_lock:
+            _drive_inflight.pop(row["path"], None)
+
 def drive_worker():
     while True:
         try:
@@ -6982,26 +7010,39 @@ def drive_worker():
                 else:
                     time.sleep(DRIVE_TICK)
                     continue
+            with _drive_inflight_lock:
+                active = len(_drive_inflight)
+            parallel = max(1, min(DRIVE_MAX_PARALLEL, int(g.get("parallel_uploads") or 1)))
             if now - drive_state["last_scan"] >= DRIVE_TICK:
                 drive_scan_once()
                 drive_state["last_scan"] = now
-            row = db_conn().execute(
-                "SELECT * FROM drive_uploads WHERE status='pending' AND (next_try IS NULL OR next_try<=?) "
-                "ORDER BY ts ASC LIMIT 1", (now,)).fetchone()
-            if row is not None:
-                db_conn().execute("UPDATE drive_uploads SET status='uploading' WHERE path=?", (row["path"],))
-                db_conn().commit()
-                drive_process_row(row)
-                # Kiểm tra quota mỗi 5 phút (hoặc khi có lỗi vừa xử lý)
-                if time.time() - last_quota_check > 300:
-                    last_quota_check = time.time()
-                    try:
-                        drive_cleanup()
-                    except DriveAuthError:
-                        pass
-                    except Exception:
-                        pass
+            if active < parallel:
+                row = db_conn().execute(
+                    "SELECT * FROM drive_uploads WHERE status='pending' AND (next_try IS NULL OR next_try<=?) "
+                    "ORDER BY ts ASC LIMIT 1", (now,)).fetchone()
+                if row is not None:
+                    cur = db_conn().execute(
+                        "UPDATE drive_uploads SET status='uploading' WHERE path=? AND status='pending'",
+                        (row["path"],))
+                    db_conn().commit()
+                    if cur.rowcount:
+                        th = threading.Thread(target=_drive_upload_thread, args=(row,), daemon=True)
+                        with _drive_inflight_lock:
+                            _drive_inflight[row["path"]] = th
+                        th.start()
+                        continue
+            if active:
+                time.sleep(0.5)
                 continue
+            # Kiểm tra quota mỗi 5 phút (hoặc khi có lỗi vừa xử lý)
+            if time.time() - last_quota_check > 300:
+                last_quota_check = time.time()
+                try:
+                    drive_cleanup()
+                except DriveAuthError:
+                    pass
+                except Exception:
+                    pass
             # Hàng đợi trống: dọn định kỳ 10 phút/lần
             if now - drive_state["last_cleanup"] > 600:
                 drive_state["last_cleanup"] = now
@@ -7024,6 +7065,7 @@ class DriveSettings(BaseModel):
     folder_name: str = "LiteNVR"
     cameras: List[str] = []
     bandwidth_kbps: int = 0
+    parallel_uploads: int = 1
     max_gb: float = 0
     min_free_mb: int = 2000
 
@@ -7087,6 +7129,7 @@ def get_drive():
         "folder_name": g.get("folder_name", "LiteNVR"),
         "cameras": g.get("cameras") or [],
         "bandwidth_kbps": int(g.get("bandwidth_kbps") or 0),
+        "parallel_uploads": max(1, min(DRIVE_MAX_PARALLEL, int(g.get("parallel_uploads") or 1))),
         "max_gb": float(g.get("max_gb") or 0),
         "min_free_mb": int(g.get("min_free_mb") or 2000),
         "since_ts": float(g.get("since_ts") or 0),
@@ -7111,6 +7154,7 @@ def update_drive(settings: DriveSettings):
         g["cam_folders"] = {}
     g["cameras"] = [c for c in settings.cameras if c in CONFIG.get("cameras", {})]
     g["bandwidth_kbps"] = max(0, int(settings.bandwidth_kbps))
+    g["parallel_uploads"] = max(1, min(DRIVE_MAX_PARALLEL, int(settings.parallel_uploads)))
     g["max_gb"] = max(0.0, float(settings.max_gb))
     g["min_free_mb"] = max(200, int(settings.min_free_mb))
     if settings.enabled and not was_enabled and not float(g.get("since_ts") or 0):
@@ -7118,6 +7162,7 @@ def update_drive(settings: DriveSettings):
         g["since_ts"] = time.time()
     save_config(CONFIG)
     log_event("info", f"Cấu hình Google Drive: {'bật' if settings.enabled else 'tắt'}"
+                      + f", tải song song {g['parallel_uploads']} file"
                       + (f", giới hạn tốc độ {g['bandwidth_kbps']} kbps" if g["bandwidth_kbps"] else ""))
     return {"status": "ok"}
 
