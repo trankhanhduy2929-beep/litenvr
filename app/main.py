@@ -53,6 +53,7 @@ RECORDINGS_DIR = os.path.join(STORAGE_DIR, "recordings")
 SNAPSHOTS_DIR = os.path.join(STORAGE_DIR, "snapshots")
 DB_PATH = os.path.join(STORAGE_DIR, "nvr.db")
 HLS_DIR = "/dev/shm/hls"
+PLAYBACK_HLS_DIR = os.path.join(STORAGE_DIR, "playback_hls")
 BUFFER_DIR = "/dev/shm/buffer"
 THUMBS_DIR = os.path.join(STORAGE_DIR, "thumbnails")
 LEGACY_THUMBS_DIR = os.path.join(BUFFER_DIR, "thumbs")
@@ -78,7 +79,7 @@ DRIVE_TICK = float(os.environ.get("NVR_DRIVE_TICK", "20"))
 DRIVE_CHUNK = int(os.environ.get("NVR_DRIVE_CHUNK", str(16 * 1024 * 1024)))
 DRIVE_RETRY_BASE = float(os.environ.get("NVR_DRIVE_RETRY_BASE", "60"))
 
-for d in [RECORDINGS_DIR, SNAPSHOTS_DIR, HLS_DIR, BUFFER_DIR, THUMBS_DIR, PLAYBACK_CACHE_DIR, MQTT_SNAPSHOT_DIR]:
+for d in [RECORDINGS_DIR, SNAPSHOTS_DIR, HLS_DIR, PLAYBACK_HLS_DIR, BUFFER_DIR, THUMBS_DIR, PLAYBACK_CACHE_DIR, MQTT_SNAPSHOT_DIR]:
     os.makedirs(d, exist_ok=True)
 
 # ---- Giám sát tài nguyên (CPU / RAM / ổ đĩa) cho dashboard ----
@@ -273,7 +274,9 @@ async def hls_no_cache(request: Request, call_next):
     cam_id = None
     if path.startswith("/hls/"):
         parts = path.split("/")
-        if len(parts) > 2:
+        if path.startswith("/hls/_play/"):
+            cam_id = parts[3] if len(parts) > 3 else None
+        elif len(parts) > 2:
             cam_id = parts[2]
             ensure_live(cam_id)
             if path.endswith("/live.m3u8") and cam_id in CONFIG.get("cameras", {}):
@@ -1007,6 +1010,9 @@ def resolve_auth(request: Request) -> tuple:
 
 
 def cam_path_segment(path: str) -> Optional[str]:
+    if path.startswith("/hls/_play/"):
+        rest = path[len("/hls/_play/"):]
+        return rest.split("/", 1)[0] or None
     for prefix in ("/hls/", "/recordings/", "/snapshots/", "/api/live/", "/api/status/",
                    "/api/timeline/", "/api/play/", "/api/drive/play/", "/api/smb/play/",
                    "/api/export/", "/api/thumb/", "/api/ptz/", "/api/locks/"):
@@ -1037,6 +1043,8 @@ def path_permission(request: Request) -> Optional[str]:
         return "__admin__"
     if path.startswith("/api/cameras"):
         return "__admin__"  # POST/DELETE/bulk đổi cấu hình camera
+    if path.startswith("/hls/_play/"):
+        return "playback"
     if path.startswith(("/api/live/", "/hls/")):
         return "live"
     if path.startswith(("/api/stats", "/api/status/")):
@@ -2943,6 +2951,7 @@ def cleanup_tmpfs():
     cams = CONFIG.get("cameras", {})
 
     try:
+        _prune_playback_hls()
         for name in list(os.listdir(HLS_DIR)):
             path = os.path.join(HLS_DIR, name)
             if not os.path.isdir(path):
@@ -7671,6 +7680,131 @@ def _play_transcode_cmd(path: str, ss: float = 0):
     ]
     return cmd
 
+_playback_hls_lock = threading.Lock()
+_playback_hls_procs: Dict[str, dict] = {}
+PLAYBACK_HLS_MAX_AGE_SEC = 3600
+
+def _prune_playback_hls(max_age: int = PLAYBACK_HLS_MAX_AGE_SEC):
+    now = time.time()
+    with _playback_hls_lock:
+        for token, rec in list(_playback_hls_procs.items()):
+            proc = rec.get("proc")
+            expired = now - float(rec.get("started") or 0) > max_age
+            if proc is not None and proc.poll() is None and not expired:
+                continue
+            if proc is not None and proc.poll() is None:
+                _terminate_process(proc)
+            _playback_hls_procs.pop(token, None)
+    if not os.path.isdir(PLAYBACK_HLS_DIR):
+        return
+    try:
+        cams = os.listdir(PLAYBACK_HLS_DIR)
+    except OSError:
+        return
+    for cam in cams:
+        cam_dir = os.path.join(PLAYBACK_HLS_DIR, cam)
+        if not os.path.isdir(cam_dir):
+            continue
+        try:
+            tokens = os.listdir(cam_dir)
+        except OSError:
+            continue
+        for token in tokens:
+            token_dir = os.path.join(cam_dir, token)
+            try:
+                age = now - os.path.getmtime(token_dir)
+            except OSError:
+                continue
+            if age > max_age:
+                with _playback_hls_lock:
+                    rec = _playback_hls_procs.pop(token, None)
+                proc = rec.get("proc") if rec else None
+                if proc is not None and proc.poll() is None:
+                    _terminate_process(proc)
+                shutil.rmtree(token_dir, ignore_errors=True)
+        try:
+            if not os.listdir(cam_dir):
+                os.rmdir(cam_dir)
+        except OSError:
+            pass
+
+def _play_hls_cmd(path: str, ss: float, out_dir: str) -> List[str]:
+    cmd = _ffmpeg_base_args()
+    if ss and ss > 0:
+        cmd += ["-ss", f"{ss:.3f}"]
+    cmd += ["-threads", str(FFMPEG_THREADS), "-i", path,
+            "-map", "0:v:0", "-map", "0:a:0?"]
+    if _recording_needs_transcode(path):
+        cmd += [
+            "-c:v", "libx264", "-preset", PLAYBACK_PRESET, "-tune", "zerolatency",
+            "-crf", str(PLAYBACK_CRF), "-pix_fmt", "yuv420p",
+            "-g", "50", "-keyint_min", "50", "-sc_threshold", "0",
+            "-force_key_frames", "expr:gte(t,n_forced*2)",
+            "-threads", str(FFMPEG_THREADS),
+        ]
+    else:
+        cmd += ["-c:v", "copy"]
+    cmd += [
+        "-c:a", "aac", "-b:a", "96k", "-ac", "2",
+        "-sn", "-dn",
+        "-f", "hls",
+        "-hls_time", "2",
+        "-hls_list_size", "0",
+        "-hls_playlist_type", "event",
+        "-hls_segment_type", "mpegts",
+        "-hls_flags", "independent_segments",
+        "-hls_segment_filename", os.path.join(out_dir, "seg%05d.ts"),
+        os.path.join(out_dir, "index.m3u8"),
+    ]
+    return cmd
+
+def _start_playback_hls(cam_id: str, path: str, ss: float = 0) -> str:
+    _prune_playback_hls()
+    with _playback_hls_lock:
+        active = [(token, rec) for token, rec in _playback_hls_procs.items()
+                  if rec.get("proc") is not None and rec["proc"].poll() is None]
+    excess = active[:max(0, len(active) - PLAYBACK_TRANSCODE_MAX + 1)]
+    for token, rec in excess:
+        with _playback_hls_lock:
+            _playback_hls_procs.pop(token, None)
+        proc = rec.get("proc")
+        if proc is not None and proc.poll() is None:
+            _terminate_process(proc)
+        old_dir = rec.get("dir")
+        if old_dir:
+            shutil.rmtree(old_dir, ignore_errors=True)
+    cam = os.path.basename(cam_id)
+    token = uuid.uuid4().hex
+    out_dir = os.path.join(PLAYBACK_HLS_DIR, cam, token)
+    os.makedirs(out_dir, exist_ok=True)
+    cmd = _play_hls_cmd(path, ss, out_dir)
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception as e:
+        shutil.rmtree(out_dir, ignore_errors=True)
+        raise HTTPException(status_code=503, detail=f"Không chạy được ffmpeg HLS: {e}")
+    playlist = os.path.join(out_dir, "index.m3u8")
+    first_seg = os.path.join(out_dir, "seg00000.ts")
+    deadline = time.monotonic() + 15
+    ready = False
+    while time.monotonic() < deadline:
+        try:
+            ready = (os.path.getsize(playlist) > 0 and os.path.getsize(first_seg) > 0)
+        except OSError:
+            ready = False
+        if ready:
+            break
+        if proc.poll() is not None:
+            break
+        time.sleep(0.1)
+    if not ready:
+        _terminate_process(proc)
+        shutil.rmtree(out_dir, ignore_errors=True)
+        raise HTTPException(status_code=503, detail="Không tạo được HLS cho bản ghi")
+    with _playback_hls_lock:
+        _playback_hls_procs[token] = {"proc": proc, "started": time.time(), "dir": out_dir}
+    return f"/hls/_play/{urllib.parse.quote(cam)}/{token}/index.m3u8"
+
 async def _stop_playback_process(proc):
     async def discard_output():
         if proc.stdout:
@@ -7767,7 +7901,7 @@ def _range_bounds(header: str, size: int):
 
 @app.get("/api/smb/play/{cam_id}/{date}/{fname}")
 def play_smb_recording(cam_id: str, date: str, fname: str, request: Request,
-                       t: int = 0, ss: float = 0, info: int = 0):
+                       t: int = 0, ss: float = 0, info: int = 0, hls: int = 0):
     """Phát bản ghi SMB. t=0: stream trực tiếp; t=1: buộc H.264;
     t=2: tự dò codec rồi phát trực tiếp hoặc chuyển mã H.264/AAC."""
     cam = os.path.basename(cam_id)
@@ -7786,7 +7920,10 @@ def play_smb_recording(cam_id: str, date: str, fname: str, request: Request,
         finally:
             target.close()
         if info:
-            return JSONResponse({"transcode": _recording_needs_transcode(path)})
+            data = {"transcode": _recording_needs_transcode(path)}
+            if hls:
+                data["hls"] = _start_playback_hls(cam, path, ss)
+            return JSONResponse(data)
         if t == 2:
             force_url = (f"/api/smb/play/{urllib.parse.quote(cam)}/{date}/"
                          f"{urllib.parse.quote(name)}?t=1&ss={max(0, ss):.3f}")
@@ -7827,7 +7964,7 @@ def play_smb_recording(cam_id: str, date: str, fname: str, request: Request,
 
 
 @app.get("/api/play/{cam_id}/{fname}")
-def play_recording(cam_id: str, fname: str, t: int = 0, ss: float = 0, info: int = 0):
+def play_recording(cam_id: str, fname: str, t: int = 0, ss: float = 0, info: int = 0, hls: int = 0):
     """Phát bản ghi. t=0: file gốc; t=1: buộc H.264/AAC; t=2: tự dò codec
     và chỉ chuyển mã khi trình duyệt không phát được (HEVC, H.264 10-bit...)."""
     safe_cam = os.path.basename(cam_id)
@@ -7836,7 +7973,10 @@ def play_recording(cam_id: str, fname: str, t: int = 0, ss: float = 0, info: int
     if not path:
         raise HTTPException(status_code=404, detail="Không tìm thấy bản ghi")
     if info:
-        return JSONResponse({"transcode": _recording_needs_transcode(path)})
+        data = {"transcode": _recording_needs_transcode(path)}
+        if hls:
+            data["hls"] = _start_playback_hls(safe_cam, path, ss)
+        return JSONResponse(data)
 
     if not t:
         return FileResponse(path, media_type="video/mp4")
@@ -8207,6 +8347,7 @@ def login_page():
 
 app.mount("/recordings", StaticFiles(directory=RECORDINGS_DIR), name="recordings")
 app.mount("/snapshots", StaticFiles(directory=SNAPSHOTS_DIR), name="snapshots")
+app.mount("/hls/_play", StaticFiles(directory=PLAYBACK_HLS_DIR), name="playback_hls")
 app.mount("/hls", StaticFiles(directory=HLS_DIR), name="hls")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 

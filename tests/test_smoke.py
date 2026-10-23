@@ -2141,6 +2141,36 @@ class PlaybackAutoTests(_AppCase):
         self.assertEqual(r.status_code, 200, r.text)
         self.assertTrue(r.json()["transcode"])
 
+    def test_ios_hls_playback_info_returns_playlist(self):
+        cam = "iosHLS"
+        fname = "2026-07-01_11-00-00.mp4"
+        self._camera_file(cam, fname)
+        with mock.patch.object(self.m, "_probe_recording", return_value={
+                "video_codec": "hevc", "video_profile": "Main",
+                "video_pix_fmt": "yuv420p", "audio_codec": "aac"}), \
+             mock.patch.object(self.m, "_start_playback_hls",
+                               return_value="/hls/_play/iosHLS/tok/index.m3u8") as start:
+            r = self.client.get(f"/api/play/{cam}/{fname}?t=2&ss=7&info=1&hls=1",
+                                headers=auth())
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json()["hls"], "/hls/_play/iosHLS/tok/index.m3u8")
+        start.assert_called_once()
+        self.assertEqual(start.call_args.args[2], 7)
+
+    def test_playback_hls_command_uses_mpegts_and_copy_when_safe(self):
+        out = "/tmp/hls-play"
+        with mock.patch.object(self.m, "_recording_needs_transcode", return_value=False):
+            cmd = self.m._play_hls_cmd("/rec/x.mp4", 12.5, out)
+        self.assertLess(cmd.index("-ss"), cmd.index("-i"))
+        self.assertEqual(cmd[cmd.index("-c:v") + 1], "copy")
+        self.assertEqual(cmd[cmd.index("-hls_segment_type") + 1], "mpegts")
+        self.assertEqual(cmd[cmd.index("-hls_playlist_type") + 1], "event")
+        self.assertTrue(cmd[-1].endswith("index.m3u8"))
+        with mock.patch.object(self.m, "_recording_needs_transcode", return_value=True):
+            cmd = self.m._play_hls_cmd("/rec/x.mp4", 0, out)
+        self.assertEqual(cmd[cmd.index("-c:v") + 1], "libx264")
+        self.assertIn("-force_key_frames", cmd)
+
     def test_auto_play_redirects_hevc_and_10bit_to_transcode(self):
         cam = "autoHEVC"
         fname = "2026-07-01_09-00-00.mp4"
