@@ -41,7 +41,7 @@ mimetypes.add_type("video/mp2t", ".ts")
 NVR_USER = os.environ.get("NVR_USER", "admin")
 NVR_PASS = os.environ.get("NVR_PASS", "admin")
 AUTH_ENABLED = os.environ.get("NVR_AUTH", "on").lower() not in ("off", "0", "false", "no")
-APP_VERSION = (os.environ.get("LITENVR_VERSION") or "1.9.12").strip() or "1.9.12"
+APP_VERSION = (os.environ.get("LITENVR_VERSION") or "1.9.13").strip() or "1.9.13"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 _STATIC_CAND = os.path.join(BASE_DIR, "static")
@@ -78,7 +78,7 @@ DRIVE_SCOPE = os.environ.get("NVR_DRIVE_SCOPE", "https://www.googleapis.com/auth
 DRIVE_TICK = float(os.environ.get("NVR_DRIVE_TICK", "20"))
 DRIVE_CHUNK = int(os.environ.get("NVR_DRIVE_CHUNK", str(16 * 1024 * 1024)))
 DRIVE_RETRY_BASE = float(os.environ.get("NVR_DRIVE_RETRY_BASE", "60"))
-DRIVE_MAX_PARALLEL = 4
+DRIVE_MAX_PARALLEL = 8
 
 for d in [RECORDINGS_DIR, SNAPSHOTS_DIR, HLS_DIR, PLAYBACK_HLS_DIR, BUFFER_DIR, THUMBS_DIR, PLAYBACK_CACHE_DIR, MQTT_SNAPSHOT_DIR]:
     os.makedirs(d, exist_ok=True)
