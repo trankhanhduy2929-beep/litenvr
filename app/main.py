@@ -2037,6 +2037,22 @@ def start_go2rtc():
         _go2rtc["error"] = str(e)
         log_event("warn", f"Không chạy được go2rtc: {e}")
 
+def _wait_go2rtc_api(timeout: float = 5.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not _go2rtc.get("running"):
+            return False
+        try:
+            with urllib.request.urlopen("http://127.0.0.1:1984/api/streams", timeout=0.6) as resp:
+                return 200 <= resp.status < 500
+        except urllib.error.HTTPError as exc:
+            if exc.code < 500:
+                return True
+        except Exception:
+            pass
+        time.sleep(0.15)
+    return False
+
 def stop_go2rtc():
     proc = _go2rtc.get("proc")
     if proc and proc.poll() is None:
@@ -2097,7 +2113,8 @@ def cam_source_urls(cam_id: str, cam_info: dict):
     return main_url, sub_url
 
 def webrtc_candidate_host(request: Request) -> str:
-    raw = GO2RTC_WEBRTC_HOST or request.headers.get("host", "")
+    raw = (GO2RTC_WEBRTC_HOST or request.headers.get("x-forwarded-host")
+           or request.headers.get("host", ""))
     raw = (raw.split(",")[0] or "").strip()
     if not raw:
         return ""
@@ -2113,8 +2130,10 @@ def webrtc_candidate_host(request: Request) -> str:
     except ValueError:
         pass
     try:
-        infos = socket.getaddrinfo(host, None, socket.AF_INET, socket.SOCK_DGRAM)
-        return infos[0][4][0]
+        infos = socket.getaddrinfo(host, None, socket.AF_UNSPEC, socket.SOCK_DGRAM)
+        v4 = [i[4][0] for i in infos if i[0] == socket.AF_INET]
+        v6 = [i[4][0] for i in infos if i[0] == socket.AF_INET6]
+        return (v4 or v6 or [""])[0]
     except Exception:
         return ""
 
@@ -3913,10 +3932,14 @@ async def api_live_webrtc(cam_id: str, request: Request):
     if cam_id not in CONFIG.get("cameras", {}):
         raise HTTPException(status_code=404, detail="Camera không tồn tại")
     assert_cam_access(request, cam_id)
+    started = False
     if not _go2rtc.get("running") and GO2RTC_MODE != "off":
         await asyncio.to_thread(start_go2rtc)
+        started = bool(_go2rtc.get("running"))
     if not _go2rtc.get("running"):
         raise HTTPException(status_code=503, detail="go2rtc chưa chạy; bật GO2RTC=on để xem WebRTC")
+    if started and not await asyncio.to_thread(_wait_go2rtc_api, 5.0):
+        raise HTTPException(status_code=503, detail="go2rtc đang khởi động, thử lại sau vài giây")
     offer = await request.body()
     if not offer or len(offer) > 2_000_000:
         raise HTTPException(status_code=400, detail="SDP offer không hợp lệ")
@@ -7508,6 +7531,13 @@ def get_cam_status(cam_id: str, request: Request):
         "rate_limited": bool(st.get("rate_limited", False)),
         "last_warning": last_warning,
         "last_error": last_error,
+        "webrtc": {
+            "enabled": bool(_go2rtc.get("enabled")),
+            "running": bool(_go2rtc.get("running")),
+            "error": _go2rtc.get("error", ""),
+            "port": GO2RTC_WEBRTC_PORT,
+            "public_host": GO2RTC_WEBRTC_HOST,
+        },
         "log": logs,
     }
 

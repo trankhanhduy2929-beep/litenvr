@@ -1189,6 +1189,25 @@
       font-weight: 600;
     }
 
+    .grid-tile .gstatus {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+      background: rgba(4, 7, 12, 0.62);
+      color: #e2e8f0;
+      text-align: center;
+      font-size: 12.5px;
+      line-height: 1.45;
+      pointer-events: none;
+    }
+
+    .grid-tile .gstatus:empty {
+      display: none;
+    }
+
     /* ================= MAIN VIDEO PLAYER ================= */
     .player-box {
       width: calc(100% - 32px);
@@ -5517,7 +5536,7 @@
         timer = setTimeout(() => {
           if (typeof video.requestVideoFrameCallback !== "function") check();
           finish(false);
-        }, 5000);
+        }, 8000);
         stopFrameWatch = () => finish(false);
         if (typeof video.requestVideoFrameCallback === "function") {
           video.requestVideoFrameCallback(onFrame);
@@ -5530,17 +5549,26 @@
         video.play().catch(() => {});
       };
       const connected = new Promise(resolve => {
-        const timer = setTimeout(() => resolve(false), 5000);
-        pc.onconnectionstatechange = () => {
-          if (pc.connectionState === "connected") { clearTimeout(timer); resolve(true); }
-          else if (pc.connectionState === "failed" || pc.connectionState === "closed") {
-            clearTimeout(timer); resolve(false);
+        const timer = setTimeout(() => resolve(false), 8000);
+        const check = () => {
+          const state = pc.connectionState || pc.iceConnectionState;
+          if (state === "connected" || state === "completed") {
+            clearTimeout(timer);
+            resolve(true);
+          } else if (state === "failed" || state === "closed") {
+            clearTimeout(timer);
+            resolve(false);
           }
         };
+        pc.onconnectionstatechange = check;
+        pc.oniceconnectionstatechange = check;
       });
       try {
+        const camCfg = (typeof cameras !== "undefined" && cameras[camId]) || {};
         pc.addTransceiver("video", {direction: "recvonly"});
-        pc.addTransceiver("audio", {direction: "recvonly"});
+        if (camCfg.audio_mode !== "none") {
+          pc.addTransceiver("audio", {direction: "recvonly"});
+        }
         const offer = await pc.createOffer();
         await pc.setLocalDescription(offer);
         await waitIceComplete(pc, 1000);
@@ -6568,9 +6596,14 @@
           : (d.stop_reason === "restart" ? "đang khởi động lại"
           : (d.expected ? "LỖI: đã dừng" : "đã dừng (chờ xem live)"))));
         const hlsAge = d.hls_age_sec == null ? "" : ` (playlist cập nhật ${d.hls_age_sec}s trước)`;
+        const wr = d.webrtc || {};
+        const webrtcTxt = wr.running
+          ? `sẵn sàng (cổng ${wr.port}${wr.public_host ? ", host " + wr.public_host : ""})`
+          : `chưa chạy (cổng ${wr.port})${wr.error ? " — " + wr.error : ""}`;
         const lines = [
           `Camera: ${currentCam} — ${stateTxt}`,
           `ffmpeg đang chạy: ${d.running ? "Có" : "KHÔNG"}`,
+          `WebRTC/go2rtc: ${webrtcTxt}`,
           `HLS sẵn sàng: ${d.hls_ready ? "Có" : "Chưa"}${hlsAge}`,
           `Codec dò được: ${d.detected_codec || "(chưa dò / cam chưa kết nối)"}${d.detected_profile ? " / " + d.detected_profile : ""}${d.detected_pix_fmt ? " / " + d.detected_pix_fmt : ""}`,
           d.detect_failed ? "Lưu ý: chưa dò được codec (camera có thể đang bận/đã bị app khác như Frigate/go2rtc chiếm session) → tạm chuyển mã H.264." : "",
@@ -6675,7 +6708,125 @@
     }
 
     // ================= Multi-view grid (1/4/9) =================
-    let gridCount = 0, gridPlayers = [], gridHtTimer = null;
+    let gridCount = 0, gridPlayers = [], gridHtTimer = null, gridWatchTimer = null, gridSeq = 0;
+
+    function stopGridPlayer(p) {
+      p.stopped = true;
+      if (p.retryTimer) { clearTimeout(p.retryTimer); p.retryTimer = null; }
+      if (p.hls) { try { p.hls.destroy(); } catch (e) {} p.hls = null; }
+      const v = p.video;
+      if (v) {
+        v.onloadeddata = null;
+        v.onerror = null;
+        try { v.pause(); } catch (e) {}
+        v.removeAttribute("src");
+        v.srcObject = null;
+        try { v.load(); } catch (e) {}
+      }
+    }
+
+    function scheduleGridRetry(p, delay) {
+      if (p.stopped || p.seq !== gridSeq || p.retryTimer) return;
+      p.status.textContent = "Mất kết nối. Đang thử lại...";
+      p.retryTimer = setTimeout(() => {
+        p.retryTimer = null;
+        if (p.stopped || p.seq !== gridSeq) return;
+        if (p.hls) { try { p.hls.destroy(); } catch (e) {} p.hls = null; }
+        const v = p.video;
+        try { v.pause(); } catch (e) {}
+        v.removeAttribute("src");
+        v.srcObject = null;
+        try { v.load(); } catch (e) {}
+        startGridPlayer(p);
+      }, delay || 1500);
+    }
+
+    function attachGridStream(p) {
+      if (p.stopped || p.seq !== gridSeq) return;
+      const v = p.video;
+      const url = `hls/${encodeURIComponent(p.cam)}/live.m3u8`;
+      p.lastTime = -1;
+      p.lastProgress = Date.now();
+      if (!IS_IOS && typeof Hls !== "undefined" && Hls.isSupported()) {
+        const h = new Hls(liveHlsConfig());
+        p.hls = h;
+        h.on(Hls.Events.MANIFEST_PARSED, () => {
+          if (p.stopped || p.hls !== h) return;
+          p.status.textContent = "";
+          v.play().catch(() => {});
+        });
+        h.on(Hls.Events.LEVEL_LOADED, () => { p.lastProgress = Date.now(); });
+        h.on(Hls.Events.FRAG_LOADED, () => {
+          p.lastProgress = Date.now();
+          if (p.status.textContent === "Đang khôi phục hình...") p.status.textContent = "";
+        });
+        h.on(Hls.Events.ERROR, (evt, data) => {
+          if (!data || !data.fatal || p.stopped || p.hls !== h) return;
+          if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+            p.status.textContent = "Đang khôi phục hình...";
+            h.recoverMediaError();
+            return;
+          }
+          scheduleGridRetry(p, data.type === Hls.ErrorTypes.NETWORK_ERROR ? 1200 : 2500);
+        });
+        h.loadSource(url);
+        h.attachMedia(v);
+      } else if (IS_IOS || v.canPlayType("application/vnd.apple.mpegurl")) {
+        v.onloadeddata = () => { if (!p.stopped) p.status.textContent = ""; };
+        v.onerror = () => scheduleGridRetry(p, 1500);
+        v.src = url;
+        if (v.load) v.load();
+        v.play().catch(() => {});
+      } else {
+        p.status.textContent = "Trình duyệt không hỗ trợ HLS";
+      }
+    }
+
+    async function startGridPlayer(p) {
+      if (p.stopped || p.seq !== gridSeq) return;
+      let lastErr = "";
+      p.status.textContent = "Đang khởi động camera...";
+      p.lastProgress = Date.now();
+      for (let i = 0; i < 40; i++) {
+        if (p.stopped || p.seq !== gridSeq) return;
+        try { await fetch(`api/live/${encodeURIComponent(p.cam)}`, { method: "POST" }); } catch (e) {}
+        try {
+          const st = await fetch(`api/status/${encodeURIComponent(p.cam)}`, { cache: "no-store" }).then(r => r.json());
+          if (st.hls_ready) { p.status.textContent = ""; attachGridStream(p); return; }
+          if (st.last_error) lastErr = st.last_error;
+        } catch (e) {
+          lastErr = (e && e.message) || String(e);
+        }
+        p.status.textContent = lastErr && i >= 2
+          ? "Đang thử lại: " + lastErr
+          : "Đang khởi động camera...";
+        await new Promise(r => setTimeout(r, 750));
+      }
+      if (p.stopped || p.seq !== gridSeq) return;
+      p.status.textContent = lastErr ? "Không kết nối được: " + lastErr : "Camera chưa sẵn sàng.";
+      scheduleGridRetry(p, 4000);
+    }
+
+    function gridWatchdog() {
+      for (const p of gridPlayers) {
+        if (p.stopped || p.seq !== gridSeq || p.retryTimer) continue;
+        const v = p.video;
+        if (!v) continue;
+        if (v.paused) {
+          v.play().catch(() => {});
+          p.lastProgress = Date.now();
+          continue;
+        }
+        if (v.readyState >= 2 && v.currentTime !== p.lastTime) {
+          p.lastTime = v.currentTime;
+          p.lastProgress = Date.now();
+          if (p.status.textContent) p.status.textContent = "";
+        } else if (Date.now() - (p.lastProgress || 0) > 12000) {
+          scheduleGridRetry(p, 1000);
+        }
+      }
+    }
+
     function toggleGrid() {
       sceneSwap(() => {
         gridCount = gridCount === 0 ? 4 : (gridCount === 4 ? 9 : 0);
@@ -6685,7 +6836,8 @@
     function renderGrid() {
       const gv = document.getElementById("gridView");
       const on = gridCount > 0;
-      gridPlayers.forEach(p => { try { p.hls && p.hls.destroy(); } catch (e) {} });
+      gridSeq++;
+      gridPlayers.forEach(stopGridPlayer);
       gridPlayers = [];
       gv.innerHTML = "";
       gv.className = "grid-view" + (gridCount === 9 ? " g9" : "");
@@ -6697,11 +6849,17 @@
       btn.classList.toggle("active", on);
       btn.textContent = !on ? "⊞ Lưới" : (gridCount === 4 ? "⊞ Lưới 4 (bấm: 9 ô)" : "⊞ Lưới 9 (bấm: tắt)");
       if (gridHtTimer) { clearInterval(gridHtTimer); gridHtTimer = null; }
+      if (gridWatchTimer) { clearInterval(gridWatchTimer); gridWatchTimer = null; }
       if (on) stopLiveWebRTC();
       try { video.pause(); } catch (e) {}
       if (!on) { if (currentCam) playLive(); return; }
       stopLiveHeartbeat();
       const ids = Object.keys(cameras).slice(0, gridCount);
+      const seq = gridSeq;
+      const beat = () => {
+        if (seq !== gridSeq) return;
+        ids.forEach(id => fetch(`api/live/${encodeURIComponent(id)}`, { method: "POST" }).catch(() => {}));
+      };
       for (const id of ids) {
         const tile = document.createElement("div");
         tile.className = "grid-tile";
@@ -6709,7 +6867,7 @@
         tile.tabIndex = 0;
         tile.setAttribute("role", "button");
         tile.setAttribute("aria-label", "Xem camera " + (cameras[id].name || id));
-        tile.innerHTML = `<video muted playsinline webkit-playsinline autoplay></video><div class="gname">${esc(cameras[id].name || id)}</div>`;
+        tile.innerHTML = `<video muted playsinline webkit-playsinline autoplay></video><div class="gname">${esc(cameras[id].name || id)}</div><div class="gstatus" role="status" aria-live="polite">Đang kết nối...</div>`;
         const pick = () => sceneSwap(() => {
           gridCount = 0;
           currentCam = id;
@@ -6721,24 +6879,18 @@
         tile.onclick = pick;
         tile.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pick(); } };
         gv.appendChild(tile);
-        const v = tile.querySelector("video");
-        const url = `hls/${encodeURIComponent(id)}/live.m3u8`;
-        let h = null;
-        if (!IS_IOS && typeof Hls !== "undefined" && Hls.isSupported()) {
-          h = new Hls(liveHlsConfig());
-          h.loadSource(url);
-          h.attachMedia(v);
-          h.on(Hls.Events.MANIFEST_PARSED, () => v.play().catch(() => {}));
-        } else if (IS_IOS || v.canPlayType("application/vnd.apple.mpegurl")) {
-          v.src = url;
-          if (v.load) v.load();
-          v.play().catch(() => {});
-        }
-        gridPlayers.push({ hls: h, cam: id });
+        const p = {
+          hls: null, cam: id, seq, stopped: false, retryTimer: null,
+          video: tile.querySelector("video"),
+          status: tile.querySelector(".gstatus"),
+          lastTime: -1, lastProgress: Date.now()
+        };
+        gridPlayers.push(p);
+        startGridPlayer(p);
       }
-      const beat = () => ids.forEach(id => fetch(`api/live/${id}`, { method: "POST" }).catch(() => {}));
       beat();
       gridHtTimer = setInterval(beat, 5000);
+      gridWatchTimer = setInterval(gridWatchdog, 5000);
     }
 
     // ================= PTZ (ONVIF) =================
