@@ -1,0 +1,13 @@
+{
+  "name": "litenvr-license-db",
+  "main": "worker.js",
+  "compatibility_date": "2026-10-24",
+  "workers_dev": true,
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "litenvr-license-production",
+      "database_id": "8155ae51-31be-4432-bfd4-c18bd4f0d155"
+    }
+  ]
+}

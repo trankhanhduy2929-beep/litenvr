@@ -1,0 +1,17 @@
+{
+  "name": "litenvr-license-portal",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start -H 127.0.0.1",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "mysql2": "^3.11.5",
+    "next": "^15.1.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  }
+}
