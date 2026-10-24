@@ -385,6 +385,13 @@ class ApiTests(_AppCase):
         self.assertTrue(0 <= j["mem_percent"] <= 100)
         self.assertTrue(0 <= j["disk_percent"] <= 100)
 
+    def test_memory_breakdown_includes_app_detail(self):
+        mm = self.m._mem_breakdown()
+        for key in ("app_rss_mb", "app_anon_mb", "app_file_mb", "app_peak_mb",
+                    "app_threads", "notify_active", "notify_limit"):
+            self.assertIn(key, mm)
+        self.assertGreaterEqual(mm["notify_limit"], 1)
+
     def test_viewer_playback_permission(self):
         self.client.post("/api/cameras", json={"cam_id": "cam1", "name": "Cam",
                                                "rtsp_url": "rtsp://127.0.0.1:1/x"}, headers=auth())
@@ -461,6 +468,36 @@ class ApiTests(_AppCase):
         self.assertEqual(j["disk_crit_percent"], 90)
         self.assertEqual(j["public_url"], "http://192.168.5.63:9895")
         self.client.post("/api/notify", json={"disk_alert_enabled": False}, headers=auth())
+
+    def test_notify_threads_are_capped(self):
+        deadline = time.time() + 2
+        while self.m._notify_active and time.time() < deadline:
+            time.sleep(0.01)
+        old_slots = self.m._notify_slots
+        release = threading.Event()
+        started = threading.Event()
+        calls = []
+
+        def fake_notify(*args):
+            calls.append(args)
+            started.set()
+            release.wait(3)
+
+        self.m._notify_slots = threading.BoundedSemaphore(1)
+        try:
+            with mock.patch.object(self.m, "notify_motion", side_effect=fake_notify):
+                self.assertTrue(self.m._start_notify_thread("c1", "a", "", 1, 2))
+                self.assertTrue(started.wait(1))
+                self.assertFalse(self.m._start_notify_thread("c2", "b", "", 3, 4))
+                self.assertFalse(self.m._start_notify_thread("c3", "c", "", 5, 6))
+            self.assertEqual(len(calls), 1)
+        finally:
+            release.set()
+            deadline = time.time() + 2
+            while self.m._notify_active and time.time() < deadline:
+                time.sleep(0.01)
+            self.m._notify_slots = old_slots
+        self.assertEqual(self.m._notify_active, 0)
 
     def test_ai_settings_persist_without_exposing_key(self):
         r = self.client.post("/api/ai", json={
@@ -2293,6 +2330,26 @@ class DrivePlaybackTests(unittest.TestCase):
         while time.time() < deadline and not os.path.isfile(self.path):
             time.sleep(0.02)
         self.assertTrue(os.path.isfile(self.path))
+
+    def test_drive_cleanup_under_quota_does_not_load_done_rows(self):
+        queries = []
+
+        class _Cursor:
+            def fetchone(self):
+                return (0,)
+
+        class _Conn:
+            def execute(self, sql, params=()):
+                queries.append(sql)
+                return _Cursor()
+
+        with mock.patch.object(self.m, "db_conn", return_value=_Conn()), \
+                mock.patch.object(self.m, "drive_connected", return_value=True), \
+                mock.patch.object(self.m, "gd_cfg", return_value={}), \
+                mock.patch.object(self.m, "drive_quota", return_value={"limit": 0, "free": 0}):
+            result = self.m.drive_cleanup(force=True)
+        self.assertEqual(result["reason"], "ok")
+        self.assertFalse(any("SELECT path, name" in q for q in queries))
 
 
 class PlaybackAutoTests(_AppCase):

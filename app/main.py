@@ -41,7 +41,7 @@ mimetypes.add_type("video/mp2t", ".ts")
 NVR_USER = os.environ.get("NVR_USER", "admin")
 NVR_PASS = os.environ.get("NVR_PASS", "admin")
 AUTH_ENABLED = os.environ.get("NVR_AUTH", "on").lower() not in ("off", "0", "false", "no")
-APP_VERSION = (os.environ.get("LITENVR_VERSION") or "1.9.17").strip() or "1.9.17"
+APP_VERSION = (os.environ.get("LITENVR_VERSION") or "1.9.18").strip() or "1.9.18"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 _STATIC_CAND = os.path.join(BASE_DIR, "static")
@@ -3134,11 +3134,20 @@ def cleanup_tmpfs():
             pass
 
 
+def release_malloc_memory():
+    try:
+        import ctypes
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except Exception:
+        pass
+
+
 def ram_janitor():
     while not _shutdown.is_set():
         try:
             cleanup_tmpfs()
             release_recording_page_cache(min_age=30, max_age=600)
+            release_malloc_memory()
         except Exception as e:
             log_event("warn", f"ram_janitor: {e}")
         _shutdown.wait(60)
@@ -3513,7 +3522,7 @@ def _proc_memory(pid) -> dict:
         with open(f"/proc/{pid}/status") as f:
             for line in f:
                 key, _, value = line.partition(":")
-                if key in ("VmRSS", "RssAnon", "VmHWM", "Threads"):
+                if key in ("VmRSS", "RssAnon", "RssFile", "RssShmem", "VmHWM", "Threads"):
                     values[key] = int(value.split()[0])
     except (OSError, ValueError, IndexError):
         pass
@@ -3609,7 +3618,15 @@ def _mem_breakdown() -> dict:
                       "threads": mem.get("Threads", 0), "age_sec": round(age_sec, 1),
                       "role": role, "cam_id": cam_id})
     procs.sort(key=lambda x: -x["rss_mb"])
-    out["app_rss_mb"] = round(_proc_rss_kb(self_pid) / 1024, 1)
+    app_mem = _proc_memory(self_pid)
+    out["app_rss_mb"] = round(app_mem.get("VmRSS", 0) / 1024, 1)
+    out["app_anon_mb"] = round(app_mem.get("RssAnon", 0) / 1024, 1)
+    out["app_file_mb"] = round(app_mem.get("RssFile", 0) / 1024, 1)
+    out["app_peak_mb"] = round(app_mem.get("VmHWM", 0) / 1024, 1)
+    out["app_threads"] = app_mem.get("Threads", 0)
+    with _notify_state_lock:
+        out["notify_active"] = _notify_active
+    out["notify_limit"] = NOTIFY_MAX_CONCURRENT
     out["children_mb"] = round(total_child / 1024, 1)
     out["children"] = procs[:12]
     out["hls_dir_mb"] = round(_dir_size_bytes(HLS_DIR) / 2**20, 1)
@@ -4109,6 +4126,12 @@ def delete_camera(cam_id: str):
 # ---------------- Thông báo chuyển động (Telegram / Webhook) ----------------
 _notify_last: Dict[str, float] = {}
 _notify_lock = threading.Lock()
+NOTIFY_MAX_CONCURRENT = max(1, int(os.environ.get("NOTIFY_MAX_CONCURRENT", "4") or "4"))
+_notify_slots = threading.BoundedSemaphore(NOTIFY_MAX_CONCURRENT)
+_notify_state_lock = threading.Lock()
+_notify_active = 0
+_notify_drop_count = 0
+_notify_drop_log_at = 0.0
 _disk_alert_state: Dict[str, Any] = {"level": "", "ts": 0.0}
 _disk_alert_lock = threading.Lock()
 
@@ -4671,6 +4694,43 @@ def notify_motion(cam_id: str, label: str, snapshot_path: str = "",
                 except OSError:
                     pass
 
+
+def _start_notify_thread(cam_id: str, label: str, snapshot_path: str,
+                         event_id: Optional[int], event_ts: Optional[int]) -> bool:
+    global _notify_active, _notify_drop_count, _notify_drop_log_at
+    if not _notify_slots.acquire(blocking=False):
+        with _notify_state_lock:
+            _notify_drop_count += 1
+            now = time.time()
+            if now - _notify_drop_log_at >= 60:
+                dropped = _notify_drop_count
+                _notify_drop_count = 0
+                _notify_drop_log_at = now
+                log_event("warn", f"Bỏ qua {dropped} thông báo do quá tải "
+                                  f"(tối đa {NOTIFY_MAX_CONCURRENT} luồng cùng lúc)")
+        return False
+    with _notify_state_lock:
+        _notify_active += 1
+
+    def run():
+        global _notify_active
+        try:
+            notify_motion(cam_id, label, snapshot_path, event_id, event_ts)
+        finally:
+            _notify_slots.release()
+            with _notify_state_lock:
+                _notify_active = max(0, _notify_active - 1)
+
+    try:
+        threading.Thread(target=run, daemon=True).start()
+    except Exception:
+        _notify_slots.release()
+        with _notify_state_lock:
+            _notify_active = max(0, _notify_active - 1)
+        return False
+    return True
+
+
 def send_alert(text: str):
     """Gửi cảnh báo hệ thống (ổ đĩa...) qua Telegram/webhook đã cấu hình."""
     cfg = CONFIG.get("notify") or {}
@@ -4957,8 +5017,7 @@ def handle_motion(cam_id: str, label: str, snap_url: str = ""):
     if not snapshot_ready:
         _start_snapshot(cam_id, cam_info, snap_path, event_id)
     notify_path = initial_path if initial_name else snap_path
-    threading.Thread(target=notify_motion,
-                     args=(cam_id, label, notify_path, event_id, ts), daemon=True).start()
+    _start_notify_thread(cam_id, label, notify_path, event_id, ts)
     _mqtt_publish_snapshot_path(cam_id, initial_path if initial_name else "")
     return {
         "status": "ok",
@@ -7553,11 +7612,8 @@ def drive_cleanup(force: bool = False) -> dict:
     if not drive_connected():
         return {"deleted": 0, "freed": 0, "reason": "chưa kết nối"}
     conn = db_conn()
-    rows = conn.execute(
-        "SELECT path, name, cam_id, drive_id, size, ts FROM drive_uploads "
-        "WHERE status='done' ORDER BY ts ASC").fetchall()
-    locked = locked_paths()
-    used = sum(int(r["size"] or 0) for r in rows)
+    used = int(conn.execute(
+        "SELECT COALESCE(SUM(size), 0) FROM drive_uploads WHERE status='done'").fetchone()[0] or 0)
     max_gb = float(g.get("max_gb") or 0)
     min_free = max(200, int(g.get("min_free_mb") or 2000)) * 1024 * 1024
     target_used = max_gb * 1_000_000_000 if max_gb > 0 else None
@@ -7569,6 +7625,10 @@ def drive_cleanup(force: bool = False) -> dict:
     if ok_used and ok_free:
         return {"deleted": 0, "freed": 0, "reason": "ok", "used": used,
                 "free": free, "limit": limit}
+    locked = locked_paths()
+    rows = conn.execute(
+        "SELECT path, name, cam_id, drive_id, size, ts FROM drive_uploads "
+        "WHERE status='done' ORDER BY ts ASC").fetchall()
     deleted, freed = 0, 0
     now = time.time()
     for r in rows:

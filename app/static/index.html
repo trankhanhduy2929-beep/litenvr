@@ -3130,6 +3130,7 @@
             <div class="stats-kv-row"><dt>Còn trống</dt><dd id="ramDetailFree">--</dd></div>
             <div class="stats-kv-row"><dt>LiteNVR (container)</dt><dd id="ramDetailContainer">--</dd></div>
             <div class="stats-kv-row"><dt>Tiến trình chính (app)</dt><dd id="ramDetailApp">--</dd></div>
+            <div class="stats-kv-row"><dt>Chi tiết tiến trình app</dt><dd id="ramDetailAppDetail">--</dd></div>
             <div class="stats-kv-row"><dt>Tiến trình con</dt><dd id="ramDetailChildren">--</dd></div>
             <div class="stats-kv-row"><dt>Giới hạn container</dt><dd id="ramDetailLimit">--</dd></div>
             <div class="stats-kv-row"><dt>Bộ đệm HLS + motion</dt><dd id="ramDetailBuffers">--</dd></div>
@@ -4159,6 +4160,13 @@
       if (admin) {
         setStatText("ramDetailContainer", mb(mm.container_used_mb));
         setStatText("ramDetailApp", mb(mm.app_rss_mb));
+        const appBits = [];
+        if (mm.app_anon_mb != null) appBits.push(`anon ${mb(mm.app_anon_mb)}`);
+        if (mm.app_file_mb != null) appBits.push(`file ${mb(mm.app_file_mb)}`);
+        if (mm.app_peak_mb != null) appBits.push(`đỉnh ${mb(mm.app_peak_mb)}`);
+        if (mm.app_threads != null) appBits.push(`${mm.app_threads} luồng`);
+        if (mm.notify_active != null && mm.notify_limit) appBits.push(`thông báo ${mm.notify_active}/${mm.notify_limit}`);
+        setStatText("ramDetailAppDetail", appBits.length ? appBits.join(" · ") : "--");
         setStatText("ramDetailChildren", mb(mm.children_mb));
         setStatText("ramDetailLimit", mm.container_limit_mb ? mb(mm.container_limit_mb) : "Không giới hạn");
         const buffers = (Number(mm.hls_dir_mb) || 0) + (Number(mm.buffer_dir_mb) || 0);
@@ -4167,7 +4175,7 @@
         setStatText("ramDetailFile", mb(mm.cgroup_file_mb));
         setStatText("ramDetailShmem", mb(mm.cgroup_shmem_mb));
       } else {
-        ["ramDetailContainer", "ramDetailApp", "ramDetailChildren", "ramDetailLimit",
+        ["ramDetailContainer", "ramDetailApp", "ramDetailAppDetail", "ramDetailChildren", "ramDetailLimit",
          "ramDetailBuffers", "ramDetailThumbs", "ramDetailFile", "ramDetailShmem"].forEach(adminOnly);
       }
 
