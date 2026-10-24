@@ -41,7 +41,7 @@ mimetypes.add_type("video/mp2t", ".ts")
 NVR_USER = os.environ.get("NVR_USER", "admin")
 NVR_PASS = os.environ.get("NVR_PASS", "admin")
 AUTH_ENABLED = os.environ.get("NVR_AUTH", "on").lower() not in ("off", "0", "false", "no")
-APP_VERSION = (os.environ.get("LITENVR_VERSION") or "1.9.14").strip() or "1.9.14"
+APP_VERSION = (os.environ.get("LITENVR_VERSION") or "1.9.15").strip() or "1.9.15"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 _STATIC_CAND = os.path.join(BASE_DIR, "static")

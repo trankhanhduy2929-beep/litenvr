@@ -8,8 +8,8 @@ on:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
-  ADDON_IMAGE: ghcr.io/trankhanhduy2929-beep/litenvr_docker_zimaos
-  ADDON_VERSION: "1.9.14"
+  ADDON_IMAGE: ghcr.io/trankhanhduy2929-beep/litenvr_addon
+  ADDON_VERSION: "1.9.15"
 
 jobs:
   build-and-push:
@@ -114,5 +114,6 @@ jobs:
         run: |
           docker buildx imagetools create \
             -t "${{ env.ADDON_IMAGE }}:${{ env.ADDON_VERSION }}" \
+            -t "${{ env.ADDON_IMAGE }}:latest" \
             "${{ env.ADDON_IMAGE }}:${{ env.ADDON_VERSION }}-amd64" \
             "${{ env.ADDON_IMAGE }}:${{ env.ADDON_VERSION }}-aarch64"
