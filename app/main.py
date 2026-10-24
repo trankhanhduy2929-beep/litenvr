@@ -41,7 +41,7 @@ mimetypes.add_type("video/mp2t", ".ts")
 NVR_USER = os.environ.get("NVR_USER", "admin")
 NVR_PASS = os.environ.get("NVR_PASS", "admin")
 AUTH_ENABLED = os.environ.get("NVR_AUTH", "on").lower() not in ("off", "0", "false", "no")
-APP_VERSION = (os.environ.get("LITENVR_VERSION") or "1.9.15").strip() or "1.9.15"
+APP_VERSION = (os.environ.get("LITENVR_VERSION") or "1.9.16").strip() or "1.9.16"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 _STATIC_CAND = os.path.join(BASE_DIR, "static")
@@ -4206,6 +4206,47 @@ def _ai_describe_snapshot(image_path: str, ai_cfg: Optional[dict] = None) -> dic
         raise RuntimeError("AI không trả về mô tả")
     return {"description": text[:1200], "model": ai_cfg["model"], "provider": provider}
 
+def _ai_check_connection(ai_cfg: dict) -> dict:
+    provider = ai_cfg["provider"]
+    if provider != "custom" and not ai_cfg.get("api_key"):
+        raise RuntimeError("Chưa nhập API key AI")
+    if not ai_cfg.get("model"):
+        raise RuntimeError("Chưa nhập model AI")
+    base = str(ai_cfg.get("base_url") or "").rstrip("/")
+    parsed = urllib.parse.urlsplit(base)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        raise RuntimeError("Base URL AI không hợp lệ")
+    timeout = max(5, min(30, int(ai_cfg.get("timeout") or 30)))
+    prompt = "Trả lời đúng một từ: OK"
+    started = time.time()
+    if provider == "gemini":
+        model = urllib.parse.quote(ai_cfg["model"], safe="")
+        data = _ai_post_json(f"{base}/models/{model}:generateContent", {
+            "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+            "generationConfig": {"temperature": 0, "maxOutputTokens": 16},
+        }, {"x-goog-api-key": ai_cfg["api_key"]}, timeout)
+        parts = ((((data.get("candidates") or [{}])[0] or {}).get("content") or {})
+                 .get("parts") or [])
+        message = " ".join(str(p.get("text") or "") for p in parts if isinstance(p, dict))
+    else:
+        data = _ai_post_json(f"{base}/chat/completions", {
+            "model": ai_cfg["model"],
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0,
+            "max_tokens": 16,
+        }, {"Authorization": f"Bearer {ai_cfg.get('api_key') or ''}"}, timeout)
+        choices = data.get("choices") or []
+        message = (((choices[0] or {}).get("message") or {}).get("content") or "") if choices else ""
+        if isinstance(message, list):
+            message = " ".join(str(p.get("text") or "") for p in message if isinstance(p, dict))
+    message = re.sub(r"\s+", " ", str(message or "")).strip()
+    return {
+        "provider": provider,
+        "model": ai_cfg["model"],
+        "message": message[:120] or "Kết nối thành công",
+        "latency_ms": int((time.time() - started) * 1000),
+    }
+
 def _wait_for_snapshot(snapshot_path: str, timeout: float) -> str:
     deadline = time.time() + max(0, timeout)
     while time.time() < deadline:
@@ -4220,7 +4261,8 @@ _license_gate_warn_at = 0.0
 def _license_cfg() -> dict:
     lic = dict(DEFAULT_CONFIG["license"])
     lic.update(CONFIG.get("license") or {})
-    lic["server_url"] = str(lic.get("server_url") or "").strip().rstrip("/")
+    lic["server_url"] = str(lic.get("server_url")
+                          or DEFAULT_CONFIG["license"]["server_url"]).strip().rstrip("/")
     lic["key"] = str(lic.get("key") or "").strip()
     return lic
 
@@ -6163,6 +6205,34 @@ def test_ai():
     except Exception as exc:
         raise HTTPException(status_code=502, detail=mask_secrets(str(exc)))
     return {"status": "ok", "result": result}
+
+@app.post("/api/ai/check")
+def check_ai(settings: AiSettings):
+    provider = settings.provider.strip().lower()
+    if provider not in AI_PROVIDERS:
+        raise HTTPException(status_code=400, detail="Nhà cung cấp AI không hợp lệ")
+    _, default_model, default_base = AI_PROVIDERS[provider]
+    saved = _ai_settings()
+    api_key = settings.api_key.strip()
+    if not api_key and provider == saved.get("provider"):
+        api_key = saved.get("api_key", "")
+    model = settings.model.strip() or default_model
+    if not model:
+        raise HTTPException(status_code=400, detail="Chưa nhập model AI")
+    if provider != "custom" and not api_key:
+        raise HTTPException(status_code=400, detail="Chưa nhập API key AI")
+    ai_cfg = {
+        "provider": provider,
+        "api_key": api_key,
+        "model": model,
+        "base_url": settings.base_url.strip().rstrip("/") or default_base,
+        "timeout": max(5, min(120, int(settings.timeout or 30))),
+    }
+    try:
+        result = _ai_check_connection(ai_cfg)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=mask_secrets(str(exc)))
+    return {"status": "ok", "valid": True, **result}
 
 # ---------------- Bản quyền LiteNVR Pro ----------------
 @app.get("/api/license")

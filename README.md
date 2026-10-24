@@ -108,11 +108,12 @@ Mở **Cài đặt → Mô tả sự kiện AI**, bật tính năng rồi chọn
 Dán API key, model và base URL nếu cần. Mỗi snapshot chuyển động được gửi tới AI để tạo
 mô tả tiếng Việt (người, xe, màu áo, hành động…). Mô tả hiện dưới ảnh sự kiện, trong
 chi tiết, trong Telegram/webhook và **tìm được bằng ô tìm kiếm sự kiện**. Nút
-**Thử với snapshot mới nhất** kiểm tra cấu hình. Ảnh gửi tối đa 8 MB.
+**Check AI** gọi thử API key, Base URL và model đang nhập trước khi lưu; nút
+**Thử với snapshot mới nhất** kiểm tra bằng ảnh thật. Ảnh gửi tối đa 8 MB.
 
 Tính năng AI và thông báo Telegram cần **license LiteNVR Pro** còn hiệu lực. Webhook
-JSON vẫn miễn phí. Vào **Cài đặt → Bản quyền** để nhập server URL và license key;
-addon kiểm tra lại mỗi 6 giờ và cho phép dùng ngoại tuyến tối đa 7 ngày.
+JSON vẫn miễn phí. Vào **Cài đặt → Bản quyền**, mở link mua/quản lý license rồi dán
+key; addon kiểm tra lại mỗi 6 giờ và cho phép dùng ngoại tuyến tối đa 7 ngày.
 
 Mã nguồn trang bán/kích hoạt license (Next.js + Cloudflare D1, deploy Vercel + Workers) nằm trong
 [`license-portal/`](license-portal/) — xem hướng dẫn tại

@@ -1804,6 +1804,60 @@
       color: var(--text-main);
     }
 
+    .license-portal {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 4px 6px;
+      padding: 10px 12px;
+      margin-bottom: 14px;
+      border: 1px solid rgba(var(--accent-rgb), 0.3);
+      border-radius: 10px;
+      background: rgba(var(--accent-rgb), 0.08);
+      font-size: 12.5px;
+      line-height: 1.5;
+      color: var(--text-muted);
+    }
+
+    .license-portal a {
+      color: var(--accent-text);
+      font-weight: 600;
+      text-decoration: none;
+      overflow-wrap: anywhere;
+    }
+
+    .license-portal a:hover,
+    .license-portal a:focus-visible {
+      text-decoration: underline;
+    }
+
+    .license-portal a:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+      border-radius: 3px;
+    }
+
+    .ai-model-row {
+      display: flex;
+      align-items: stretch;
+      gap: 8px;
+    }
+
+    .ai-model-row input {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .ai-model-row button {
+      white-space: nowrap;
+    }
+
+    .ai-check-hint {
+      font-size: 11.5px;
+      line-height: 1.45;
+      color: var(--text-muted);
+    }
+
     .grid-2 {
       display: grid;
       grid-template-columns: 1fr 1fr;
@@ -2543,7 +2597,7 @@
             <div class="menu-group-label">Kết nối</div>
             <button onclick="openHassModal()" data-admin>🛰️ Home Assistant</button>
             <button onclick="openNotifyModal()" data-admin>🔔 Thông báo</button>
-            <button onclick="openAiModal()" data-admin>Mô tả sự kiện AI</button>
+            <button onclick="openAiModal()" data-admin>🤖 Mô tả sự kiện AI</button>
           </div>
           <div class="menu-sep" role="presentation"></div>
           <div class="menu-group" role="presentation">
@@ -3445,18 +3499,17 @@
   <div class="modal" id="licenseModal">
     <div class="modal-box">
       <h3 style="margin-top:0">Bản quyền LiteNVR Pro</h3>
-      <div id="licStatus" style="font-size:13px;line-height:1.6;margin-bottom:12px;"></div>
-      <div style="font-size:12px;color:var(--text-muted);line-height:1.55;margin-bottom:12px;">
-        Telegram và mô tả sự kiện AI cần license còn hiệu lực. Mua hoặc quản lý license tại
-        <a id="licPortalLink" href="https://litenvr-license.vercel.app" target="_blank" rel="noopener">trang bản quyền</a>.
+      <div class="license-portal">
+        <span>Mua hoặc quản lý license tại</span>
+        <a id="licPortalLink" href="https://litenvr-license.vercel.app" target="_blank" rel="noopener">https://litenvr-license.vercel.app</a>
       </div>
+      <div style="font-size:12px;color:var(--text-muted);line-height:1.55;margin-bottom:12px;">
+        Telegram và mô tả sự kiện AI cần license còn hiệu lực.
+      </div>
+      <div id="licStatus" style="font-size:13px;line-height:1.6;margin-bottom:12px;"></div>
       <div class="form-row">
         <label>Mã cài đặt (đọc cho nhân viên hỗ trợ khi cần chuyển máy):</label>
         <input id="licInstallId" readonly>
-      </div>
-      <div class="form-row">
-        <label>License server URL:</label>
-        <input id="licServerUrl" placeholder="https://litenvr-license.vercel.app">
       </div>
       <div class="form-row">
         <label>License key:</label>
@@ -3490,8 +3543,12 @@
         <select id="aiProvider" onchange="aiProviderChanged()"></select>
       </div>
       <div class="form-row">
-        <label>Model:</label>
-        <input id="aiModel" placeholder="gemini-2.0-flash">
+        <label for="aiModel">Model:</label>
+        <div class="ai-model-row">
+          <input id="aiModel" placeholder="gemini-2.0-flash">
+          <button type="button" id="aiCheckBtn" onclick="checkAi()" title="Kiểm tra API key, Base URL và model trước khi lưu">🧪 Check AI</button>
+        </div>
+        <div class="ai-check-hint">Check AI gọi thử đúng model đang nhập, chưa cần lưu cấu hình.</div>
       </div>
       <div class="form-row">
         <label>Base URL (tự điền theo nhà cung cấp, sửa được cho custom):</label>
@@ -7221,13 +7278,11 @@
           + `<div>Kiểm tra gần nhất: ${esc(lic.last_check ? new Date(lic.last_check * 1000).toLocaleString("vi-VN") : "—")} · Dự phòng ngoại tuyến: ${esc(lic.grace_days)} ngày</div>`
           + (lic.last_error ? `<div style="color:var(--err-text)">Lỗi gần nhất: ${esc(lic.last_error)}</div>` : "");
         document.getElementById("licInstallId").value = lic.installation_id || "";
-        document.getElementById("licServerUrl").value = lic.server_url || "";
         document.getElementById("licKey").value = "";
         const portal = document.getElementById("licPortalLink");
-        if (lic.server_url) {
-          portal.href = lic.server_url;
-          portal.textContent = lic.server_url;
-        }
+        const portalUrl = lic.server_url || "https://litenvr-license.vercel.app";
+        portal.href = portalUrl;
+        portal.textContent = portalUrl;
       } catch (e) {}
       document.getElementById("licenseModal").classList.add("open");
     }
@@ -7240,7 +7295,7 @@
       st.textContent = "⏳ Đang kích hoạt...";
       const r = await fetch("api/license", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ key, server_url: document.getElementById("licServerUrl").value.trim() })
+        body: JSON.stringify({ key })
       });
       const d = await r.json().catch(() => ({}));
       st.style.color = r.ok ? "var(--ok-text)" : "var(--err-text)";
@@ -7299,7 +7354,13 @@
     function closeAiModal() { document.getElementById("aiModal").classList.remove("open"); }
     async function saveAi() {
       const st = document.getElementById("aiStatus");
-      const payload = {
+      const r = await fetch("api/ai", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(aiFormPayload()) });
+      const d = await r.json().catch(() => ({}));
+      st.style.color = r.ok ? "var(--ok-text)" : "var(--err-text)";
+      st.textContent = r.ok ? "✔ Đã lưu cấu hình AI." : "❌ " + (d.detail || r.status);
+    }
+    function aiFormPayload() {
+      return {
         enabled: document.getElementById("aiEnabled").checked,
         provider: document.getElementById("aiProvider").value,
         api_key: document.getElementById("aiApiKey").value.trim(),
@@ -7308,10 +7369,35 @@
         prompt: document.getElementById("aiPrompt").value.trim(),
         timeout: parseInt(document.getElementById("aiTimeout").value) || 30
       };
-      const r = await fetch("api/ai", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
-      const d = await r.json().catch(() => ({}));
-      st.style.color = r.ok ? "var(--ok-text)" : "var(--err-text)";
-      st.textContent = r.ok ? "✔ Đã lưu cấu hình AI." : "❌ " + (d.detail || r.status);
+    }
+    async function checkAi() {
+      const st = document.getElementById("aiStatus");
+      const btn = document.getElementById("aiCheckBtn");
+      const oldText = btn.textContent;
+      st.style.color = "var(--text-muted)";
+      st.textContent = "⏳ Đang kiểm tra kết nối AI...";
+      btn.disabled = true;
+      btn.textContent = "⏳ Đang check...";
+      try {
+        const r = await fetch("api/ai/check", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(aiFormPayload())
+        });
+        const d = await r.json().catch(() => ({}));
+        st.style.color = r.ok ? "var(--ok-text)" : "var(--err-text)";
+        if (r.ok) {
+          const reply = d.message ? " · phản hồi: " + d.message : "";
+          st.textContent = "✔ Kết nối AI OK · " + d.model + " · " + d.latency_ms + " ms" + reply;
+        } else {
+          st.textContent = "❌ " + (d.detail || r.status);
+        }
+      } catch (e) {
+        st.style.color = "var(--err-text)";
+        st.textContent = "❌ " + e;
+      } finally {
+        btn.disabled = false;
+        btn.textContent = oldText;
+      }
     }
     async function testAi() {
       const st = document.getElementById("aiStatus");

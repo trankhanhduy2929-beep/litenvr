@@ -106,7 +106,7 @@ giao diện.
 ## 6. Kích hoạt trên LiteNVR
 
 1. Mở LiteNVR → **Cài đặt → Bản quyền**.
-2. Nhập `https://<domain>` vào **License server URL**.
+2. Mở link **Mua hoặc quản lý license** trên đầu hộp thoại.
 3. Dán key khách đã mua, bấm **Kích hoạt**.
 4. Bấm **Kiểm tra lại**. Trạng thái phải xanh.
 
@@ -120,7 +120,7 @@ curl -s https://<domain>/api/health
 
 curl -s -X POST https://<domain>/api/license/activate \
   -H 'Content-Type: application/json' \
-  -d '{"key":"LITE-XXXX-XXXX-XXXX","installation_id":"test-device","version":"1.9.15"}'
+  -d '{"key":"LITE-XXXX-XXXX-XXXX","installation_id":"test-device","version":"1.9.16"}'
 ```
 
 Kết quả hợp lệ có `valid: true`, `plan`, `expires_at`, `token`. Nhớ gỡ máy test

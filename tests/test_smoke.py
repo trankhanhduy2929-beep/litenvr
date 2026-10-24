@@ -489,6 +489,35 @@ class ApiTests(_AppCase):
         self.assertEqual(result["model"], "gemini-test")
         self.assertTrue(post.called)
 
+    def test_ai_check_uses_form_values_without_saving(self):
+        old = self.m.CONFIG.get("ai")
+        self.m.CONFIG["ai"] = {
+            "enabled": True, "provider": "gemini", "api_key": "saved-key",
+            "model": "gemini-saved", "base_url": "https://gemini.test/v1beta",
+            "prompt": "Mô tả", "timeout": 10,
+        }
+        fake = {"candidates": [{"content": {"parts": [{"text": "OK"}]}}]}
+        try:
+            with mock.patch.object(self.m, "_ai_post_json", return_value=fake) as post:
+                r = self.client.post("/api/ai/check", json={
+                    "enabled": False, "provider": "gemini", "api_key": "",
+                    "model": "gemini-check", "base_url": "https://gemini.test/v1beta",
+                    "prompt": "", "timeout": 5,
+                }, headers=auth())
+            self.assertEqual(r.status_code, 200)
+            j = r.json()
+            self.assertTrue(j["valid"])
+            self.assertEqual(j["model"], "gemini-check")
+            self.assertEqual(j["message"], "OK")
+            self.assertIn("gemini-check:generateContent", post.call_args[0][0])
+            self.assertEqual(post.call_args[0][2]["x-goog-api-key"], "saved-key")
+            self.assertEqual(self.m._ai_settings()["model"], "gemini-saved")
+        finally:
+            if old is None:
+                self.m.CONFIG.pop("ai", None)
+            else:
+                self.m.CONFIG["ai"] = old
+
     def test_license_status_and_activation_cache(self):
         j = self.client.get("/api/license", headers=auth()).json()
         self.assertFalse(j["valid"])
@@ -506,6 +535,18 @@ class ApiTests(_AppCase):
         finally:
             self.m.CONFIG["license"] = old
             self.m.save_config(self.m.CONFIG)
+
+    def test_license_blank_server_uses_default(self):
+        old = self.m.CONFIG.get("license")
+        self.m.CONFIG["license"] = {"server_url": ""}
+        try:
+            self.assertEqual(self.m._license_cfg()["server_url"],
+                             "https://litenvr-license.vercel.app")
+        finally:
+            if old is None:
+                self.m.CONFIG.pop("license", None)
+            else:
+                self.m.CONFIG["license"] = old
 
     def test_events_search_includes_ai_description(self):
         conn = self.m.db_conn()
