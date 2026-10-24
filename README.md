@@ -100,9 +100,9 @@ Sự kiện AI đi đúng luồng cũ: kích hoạt ghi hình, lưu vào danh s�
 ## Mô tả sự kiện bằng AI (Gemini / OpenAI / Groq / custom)
 
 Mở **Cài đặt → Mô tả sự kiện AI**, bật tính năng rồi chọn nhà cung cấp:
-- **Google Gemini** (mặc định `gemini-2.0-flash`)
-- **OpenAI / ChatGPT** (mặc định `gpt-4o-mini`)
-- **Groq** (mặc định `meta-llama/llama-4-scout-17b-16e-instruct`)
+- **Google Gemini** (mặc định `gemini-3.8-flash`)
+- **OpenAI / ChatGPT** (mặc định `gpt-6-luna`)
+- **Groq** (mặc định `qwen/qwen3.8-27b`)
 - **OpenAI-compatible custom** (Ollama, LM Studio, proxy nội bộ…)
 
 Dán API key, model và base URL nếu cần. Mỗi snapshot chuyển động được gửi tới AI để tạo
@@ -110,6 +110,9 @@ mô tả tiếng Việt (người, xe, màu áo, hành động…). Mô tả hi�
 chi tiết, trong Telegram/webhook và **tìm được bằng ô tìm kiếm sự kiện**. Nút
 **Check AI** gọi thử API key, Base URL và model đang nhập trước khi lưu; nút
 **Thử với snapshot mới nhất** kiểm tra bằng ảnh thật. Ảnh gửi tối đa 8 MB.
+Cấu hình cũ dùng model đã ngừng hỗ trợ (`gemini-2.0-flash`,
+`meta-llama/llama-4-scout-17b-16e-instruct`) được tự chuyển sang model mặc định
+mới khi vẫn dùng Base URL gốc của nhà cung cấp.
 
 Tính năng AI và thông báo Telegram cần **license LiteNVR Pro** còn hiệu lực. Webhook
 JSON vẫn miễn phí. Vào **Cài đặt → Bản quyền**, mở link mua/quản lý license rồi dán

@@ -41,7 +41,7 @@ mimetypes.add_type("video/mp2t", ".ts")
 NVR_USER = os.environ.get("NVR_USER", "admin")
 NVR_PASS = os.environ.get("NVR_PASS", "admin")
 AUTH_ENABLED = os.environ.get("NVR_AUTH", "on").lower() not in ("off", "0", "false", "no")
-APP_VERSION = (os.environ.get("LITENVR_VERSION") or "1.9.16").strip() or "1.9.16"
+APP_VERSION = (os.environ.get("LITENVR_VERSION") or "1.9.17").strip() or "1.9.17"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 _STATIC_CAND = os.path.join(BASE_DIR, "static")
@@ -368,12 +368,22 @@ async def security_headers(request: Request, call_next):
     return resp
 
 AI_PROVIDERS = {
-    "gemini": ("Google Gemini", "gemini-2.0-flash",
+    "gemini": ("Google Gemini", "gemini-3.8-flash",
                "https://generativelanguage.googleapis.com/v1beta"),
-    "openai": ("OpenAI / ChatGPT", "gpt-4o-mini", "https://api.openai.com/v1"),
-    "groq": ("Groq", "meta-llama/llama-4-scout-17b-16e-instruct",
-             "https://api.groq.com/openai/v1"),
+    "openai": ("OpenAI / ChatGPT", "gpt-6-luna", "https://api.openai.com/v1"),
+    "groq": ("Groq", "qwen/qwen3.8-27b", "https://api.groq.com/openai/v1"),
     "custom": ("OpenAI-compatible (custom)", "", ""),
+}
+
+AI_RETIRED_MODELS = {
+    "gemini": {
+        "gemini-2.0-flash": "gemini-3.8-flash",
+        "gemini-2.0-flash-001": "gemini-3.8-flash",
+        "gemini-2.0-flash-lite": "gemini-3.8-flash",
+        "gemini-2.0-flash-lite-001": "gemini-3.8-flash",
+        "gemini-2.0-flash-exp": "gemini-3.8-flash",
+    },
+    "groq": {"meta-llama/llama-4-scout-17b-16e-instruct": "qwen/qwen3.8-27b"},
 }
 
 DEFAULT_CONFIG = {
@@ -433,7 +443,7 @@ DEFAULT_CONFIG = {
         "enabled": False,
         "provider": "gemini",
         "api_key": "",
-        "model": "gemini-2.0-flash",
+        "model": "gemini-3.8-flash",
         "base_url": "https://generativelanguage.googleapis.com/v1beta",
         "prompt": (
             "Mô tả ngắn gọn bằng tiếng Việt nội dung ảnh camera an ninh: người, "
@@ -4102,6 +4112,42 @@ _notify_lock = threading.Lock()
 _disk_alert_state: Dict[str, Any] = {"level": "", "ts": 0.0}
 _disk_alert_lock = threading.Lock()
 
+def _normalize_ai_model(provider: str, model: Any) -> str:
+    value = str(model or "").strip()
+    if provider == "gemini" and value.startswith("models/"):
+        value = value[7:].strip()
+    return value
+
+def _normalize_ai_base_url(raw: Any, provider: str, default_base: str) -> str:
+    base = str(raw or default_base or "").strip().rstrip("/")
+    if not base:
+        return ""
+    if provider == "gemini":
+        base = re.sub(r"/models/[^/:]+:(?:streamGenerateContent|generateContent)$", "", base)
+    else:
+        if base.endswith("/chat/completions"):
+            base = base[:-len("/chat/completions")].rstrip("/")
+    return base
+
+def _migrate_ai_model(provider: str, model: str, base_url: str, default_base: str) -> str:
+    if base_url != str(default_base or "").rstrip("/"):
+        return model
+    return AI_RETIRED_MODELS.get(provider, {}).get(model, model)
+
+def _ai_gemini_config(model: str, max_tokens: int) -> dict:
+    config = {"maxOutputTokens": max_tokens}
+    if re.match(r"^gemini-(?:3|4)", model):
+        config["thinkingConfig"] = {"thinkingLevel": "low"}
+    return config
+
+def _ai_chat_payload(provider: str, model: str, content: Any, max_tokens: int) -> dict:
+    payload = {"model": model, "messages": [{"role": "user", "content": content}]}
+    if provider == "custom":
+        payload["max_tokens"] = max_tokens
+    else:
+        payload["max_completion_tokens"] = max_tokens
+    return payload
+
 def _ai_settings() -> dict:
     ai_cfg = dict(DEFAULT_CONFIG["ai"])
     ai_cfg.update(CONFIG.get("ai") or {})
@@ -4111,8 +4157,11 @@ def _ai_settings() -> dict:
     label, default_model, default_base = AI_PROVIDERS[provider]
     ai_cfg["provider"] = provider
     ai_cfg["api_key"] = str(ai_cfg.get("api_key") or "").strip()
-    ai_cfg["model"] = str(ai_cfg.get("model") or default_model).strip() or default_model
-    ai_cfg["base_url"] = (str(ai_cfg.get("base_url") or default_base).strip().rstrip("/"))
+    ai_cfg["model"] = _normalize_ai_model(
+        provider, ai_cfg.get("model") or default_model) or default_model
+    ai_cfg["base_url"] = _normalize_ai_base_url(ai_cfg.get("base_url"), provider, default_base)
+    ai_cfg["model"] = _migrate_ai_model(
+        provider, ai_cfg["model"], ai_cfg["base_url"], default_base)
     ai_cfg["prompt"] = str(ai_cfg.get("prompt") or DEFAULT_CONFIG["ai"]["prompt"]).strip()
     try:
         ai_cfg["timeout"] = max(5, min(120, int(ai_cfg.get("timeout") or 30)))
@@ -4123,7 +4172,12 @@ def _ai_settings() -> dict:
 def _ai_post_json(url: str, payload: dict, headers: dict, timeout: int) -> dict:
     req = urllib.request.Request(
         url, data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-        method="POST", headers={"Content-Type": "application/json", **headers})
+        method="POST", headers={
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": f"LiteNVR/{APP_VERSION}",
+            **headers,
+        })
     try:
         with urllib.request.urlopen(req, timeout=timeout) as response:
             raw = response.read(512 * 1024)
@@ -4168,43 +4222,50 @@ def _ai_describe_snapshot(image_path: str, ai_cfg: Optional[dict] = None) -> dic
         raise RuntimeError("Ảnh snapshot vượt quá 8 MB")
     b64 = base64.b64encode(image).decode("ascii")
     prompt = ai_cfg["prompt"]
+    model = _normalize_ai_model(provider, ai_cfg["model"])
+    default_base = AI_PROVIDERS[provider][2]
+    base = _normalize_ai_base_url(ai_cfg["base_url"], provider, default_base)
     if provider == "gemini":
-        base = ai_cfg["base_url"] or AI_PROVIDERS["gemini"][2]
-        model = urllib.parse.quote(ai_cfg["model"], safe="")
-        url = f"{base}/models/{model}:generateContent"
+        url = f"{base}/models/{urllib.parse.quote(model, safe='')}:generateContent"
         data = _ai_post_json(url, {
             "contents": [{"role": "user", "parts": [
                 {"text": prompt},
                 {"inline_data": {"mime_type": "image/jpeg", "data": b64}},
             ]}],
-            "generationConfig": {"temperature": 0.2, "maxOutputTokens": 220},
+            "generationConfig": _ai_gemini_config(model, 2048),
         }, {"x-goog-api-key": ai_cfg["api_key"]}, ai_cfg["timeout"])
-        parts = ((((data.get("candidates") or [{}])[0] or {}).get("content") or {})
-                 .get("parts") or [])
+        candidates = data.get("candidates") or [{}]
+        candidate = candidates[0] if isinstance(candidates[0], dict) else {}
+        parts = ((candidate.get("content") or {}).get("parts") or [])
         text = " ".join(str(p.get("text") or "") for p in parts if isinstance(p, dict))
+        if not text:
+            reason = candidate.get("finishReason") or (
+                (data.get("promptFeedback") or {}).get("blockReason"))
+            if reason:
+                raise RuntimeError(f"AI không trả về mô tả (lý do: {reason})")
     else:
-        base = ai_cfg["base_url"]
         parsed = urllib.parse.urlsplit(base)
         if parsed.scheme not in ("http", "https") or not parsed.netloc:
             raise RuntimeError("Base URL AI không hợp lệ")
-        data = _ai_post_json(f"{base}/chat/completions", {
-            "model": ai_cfg["model"],
-            "messages": [{"role": "user", "content": [
-                {"type": "text", "text": prompt},
-                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
-            ]}],
-            "temperature": 0.2,
-            "max_tokens": 220,
-        }, {"Authorization": f"Bearer {ai_cfg['api_key']}"}, ai_cfg["timeout"])
+        headers = {}
+        if ai_cfg.get("api_key"):
+            headers["Authorization"] = f"Bearer {ai_cfg['api_key']}"
+        data = _ai_post_json(f"{base}/chat/completions", _ai_chat_payload(provider, model, [
+            {"type": "text", "text": prompt},
+            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
+        ], 2048), headers, ai_cfg["timeout"])
         choices = data.get("choices") or []
-        message = ((choices[0] or {}).get("message") or {}) if choices else {}
+        choice = choices[0] if choices and isinstance(choices[0], dict) else {}
+        message = choice.get("message") or {}
         text = message.get("content") or ""
         if isinstance(text, list):
             text = " ".join(str(p.get("text") or "") for p in text if isinstance(p, dict))
+        if not text and choice.get("finish_reason"):
+            raise RuntimeError(f"AI không trả về mô tả (lý do: {choice['finish_reason']})")
     text = re.sub(r"\s+", " ", str(text or "")).strip()
     if not text:
         raise RuntimeError("AI không trả về mô tả")
-    return {"description": text[:1200], "model": ai_cfg["model"], "provider": provider}
+    return {"description": text[:1200], "model": model, "provider": provider}
 
 def _ai_check_connection(ai_cfg: dict) -> dict:
     provider = ai_cfg["provider"]
@@ -4212,7 +4273,9 @@ def _ai_check_connection(ai_cfg: dict) -> dict:
         raise RuntimeError("Chưa nhập API key AI")
     if not ai_cfg.get("model"):
         raise RuntimeError("Chưa nhập model AI")
-    base = str(ai_cfg.get("base_url") or "").rstrip("/")
+    model = _normalize_ai_model(provider, ai_cfg["model"])
+    default_base = AI_PROVIDERS[provider][2]
+    base = _normalize_ai_base_url(ai_cfg.get("base_url"), provider, default_base)
     parsed = urllib.parse.urlsplit(base)
     if parsed.scheme not in ("http", "https") or not parsed.netloc:
         raise RuntimeError("Base URL AI không hợp lệ")
@@ -4220,29 +4283,32 @@ def _ai_check_connection(ai_cfg: dict) -> dict:
     prompt = "Trả lời đúng một từ: OK"
     started = time.time()
     if provider == "gemini":
-        model = urllib.parse.quote(ai_cfg["model"], safe="")
-        data = _ai_post_json(f"{base}/models/{model}:generateContent", {
-            "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-            "generationConfig": {"temperature": 0, "maxOutputTokens": 16},
-        }, {"x-goog-api-key": ai_cfg["api_key"]}, timeout)
-        parts = ((((data.get("candidates") or [{}])[0] or {}).get("content") or {})
-                 .get("parts") or [])
+        data = _ai_post_json(
+            f"{base}/models/{urllib.parse.quote(model, safe='')}:generateContent", {
+                "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+                "generationConfig": _ai_gemini_config(model, 1024),
+            }, {"x-goog-api-key": ai_cfg["api_key"]}, timeout)
+        candidates = data.get("candidates") or [{}]
+        candidate = candidates[0] if isinstance(candidates[0], dict) else {}
+        parts = ((candidate.get("content") or {}).get("parts") or [])
         message = " ".join(str(p.get("text") or "") for p in parts if isinstance(p, dict))
     else:
-        data = _ai_post_json(f"{base}/chat/completions", {
-            "model": ai_cfg["model"],
-            "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0,
-            "max_tokens": 16,
-        }, {"Authorization": f"Bearer {ai_cfg.get('api_key') or ''}"}, timeout)
+        headers = {}
+        if ai_cfg.get("api_key"):
+            headers["Authorization"] = f"Bearer {ai_cfg['api_key']}"
+        data = _ai_post_json(
+            f"{base}/chat/completions",
+            _ai_chat_payload(provider, model, prompt, 1024),
+            headers, timeout)
         choices = data.get("choices") or []
-        message = (((choices[0] or {}).get("message") or {}).get("content") or "") if choices else ""
+        choice = choices[0] if choices and isinstance(choices[0], dict) else {}
+        message = (choice.get("message") or {}).get("content") or ""
         if isinstance(message, list):
             message = " ".join(str(p.get("text") or "") for p in message if isinstance(p, dict))
     message = re.sub(r"\s+", " ", str(message or "")).strip()
     return {
         "provider": provider,
-        "model": ai_cfg["model"],
+        "model": model,
         "message": message[:120] or "Kết nối thành công",
         "latency_ms": int((time.time() - started) * 1000),
     }
@@ -6169,8 +6235,10 @@ def update_ai_settings(settings: AiSettings):
     ai_cfg["provider"] = provider
     if settings.api_key.strip():
         ai_cfg["api_key"] = settings.api_key.strip()
-    ai_cfg["model"] = settings.model.strip() or default_model
-    ai_cfg["base_url"] = (settings.base_url.strip().rstrip("/") or default_base)
+    ai_cfg["model"] = _normalize_ai_model(
+        provider, settings.model.strip() or default_model)
+    ai_cfg["base_url"] = _normalize_ai_base_url(
+        settings.base_url, provider, default_base)
     ai_cfg["prompt"] = settings.prompt.strip() or DEFAULT_CONFIG["ai"]["prompt"]
     ai_cfg["timeout"] = max(5, min(120, int(settings.timeout or 30)))
     if not ai_cfg["model"]:
@@ -6216,16 +6284,18 @@ def check_ai(settings: AiSettings):
     api_key = settings.api_key.strip()
     if not api_key and provider == saved.get("provider"):
         api_key = saved.get("api_key", "")
-    model = settings.model.strip() or default_model
+    model = _normalize_ai_model(provider, settings.model.strip() or default_model)
     if not model:
         raise HTTPException(status_code=400, detail="Chưa nhập model AI")
     if provider != "custom" and not api_key:
         raise HTTPException(status_code=400, detail="Chưa nhập API key AI")
+    base = _normalize_ai_base_url(settings.base_url, provider, default_base)
+    model = _migrate_ai_model(provider, model, base, default_base)
     ai_cfg = {
         "provider": provider,
         "api_key": api_key,
         "model": model,
-        "base_url": settings.base_url.strip().rstrip("/") or default_base,
+        "base_url": base,
         "timeout": max(5, min(120, int(settings.timeout or 30))),
     }
     try:

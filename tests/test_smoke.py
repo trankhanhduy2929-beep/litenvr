@@ -465,14 +465,14 @@ class ApiTests(_AppCase):
     def test_ai_settings_persist_without_exposing_key(self):
         r = self.client.post("/api/ai", json={
             "enabled": False, "provider": "openai", "api_key": "sk-test-secret",
-            "model": "gpt-4o-mini", "base_url": "https://api.openai.com/v1",
+            "model": "gpt-6-luna", "base_url": "https://api.openai.com/v1",
             "prompt": "Mô tả thử", "timeout": 20,
         }, headers=auth())
         self.assertEqual(r.status_code, 200)
         j = self.client.get("/api/ai", headers=auth()).json()
         self.assertTrue(j["has_api_key"])
         self.assertEqual(j["provider"], "openai")
-        self.assertEqual(j["model"], "gpt-4o-mini")
+        self.assertEqual(j["model"], "gpt-6-luna")
         self.assertNotIn("api_key", j)
         self.assertTrue(any(p["id"] == "gemini" for p in j["providers"]))
 
@@ -488,6 +488,104 @@ class ApiTests(_AppCase):
         self.assertEqual(result["description"], "Người áo đỏ đi bộ.")
         self.assertEqual(result["model"], "gemini-test")
         self.assertTrue(post.called)
+        payload = post.call_args[0][1]
+        self.assertEqual(payload["generationConfig"]["maxOutputTokens"], 2048)
+        self.assertNotIn("temperature", payload["generationConfig"])
+
+    def test_ai_settings_migrates_retired_default_models(self):
+        old = self.m.CONFIG.get("ai")
+        cases = [
+            ("gemini", "gemini-2.0-flash", "gemini-3.8-flash",
+             "https://generativelanguage.googleapis.com/v1beta"),
+            ("groq", "meta-llama/llama-4-scout-17b-16e-instruct",
+             "qwen/qwen3.8-27b", "https://api.groq.com/openai/v1"),
+        ]
+        try:
+            for provider, retired, current, base in cases:
+                with self.subTest(provider=provider):
+                    self.m.CONFIG["ai"] = {
+                        "provider": provider, "model": retired, "base_url": base,
+                    }
+                    self.assertEqual(self.m._ai_settings()["model"], current)
+        finally:
+            if old is None:
+                self.m.CONFIG.pop("ai", None)
+            else:
+                self.m.CONFIG["ai"] = old
+
+    def test_ai_settings_keeps_retired_model_on_custom_base(self):
+        old = self.m.CONFIG.get("ai")
+        self.m.CONFIG["ai"] = {
+            "provider": "gemini", "model": "gemini-2.0-flash",
+            "base_url": "https://proxy.test/v1beta",
+        }
+        try:
+            ai_cfg = self.m._ai_settings()
+            self.assertEqual(ai_cfg["model"], "gemini-2.0-flash")
+            self.assertEqual(ai_cfg["base_url"], "https://proxy.test/v1beta")
+        finally:
+            if old is None:
+                self.m.CONFIG.pop("ai", None)
+            else:
+                self.m.CONFIG["ai"] = old
+
+    def test_ai_post_json_sets_user_agent(self):
+        response = mock.MagicMock()
+        response.read.return_value = b'{"ok": true}'
+        response.__enter__.return_value = response
+        with mock.patch.object(
+                self.m.urllib.request, "urlopen", return_value=response) as urlopen:
+            self.m._ai_post_json("https://example.test", {"ping": True}, {}, 5)
+        req = urlopen.call_args[0][0]
+        self.assertEqual(req.headers["User-agent"], f"LiteNVR/{self.m.APP_VERSION}")
+
+    def test_ai_check_uses_current_gemini_payload(self):
+        fake = {"candidates": [{"content": {"parts": [{"text": "OK"}]}}]}
+        with mock.patch.object(self.m, "_ai_post_json", return_value=fake) as post:
+            r = self.client.post("/api/ai/check", json={
+                "enabled": False, "provider": "gemini", "api_key": "key",
+                "model": "models/gemini-3.8-flash",
+                "base_url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent",
+                "prompt": "", "timeout": 5,
+            }, headers=auth())
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(
+            post.call_args[0][0],
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent")
+        payload = post.call_args[0][1]
+        self.assertEqual(payload["generationConfig"]["maxOutputTokens"], 1024)
+        self.assertEqual(
+            payload["generationConfig"]["thinkingConfig"]["thinkingLevel"], "low")
+        self.assertNotIn("temperature", payload["generationConfig"])
+
+    def test_ai_check_openai_uses_completion_token_limit(self):
+        fake = {"choices": [{"message": {"content": "OK"}}]}
+        with mock.patch.object(self.m, "_ai_post_json", return_value=fake) as post:
+            r = self.client.post("/api/ai/check", json={
+                "enabled": False, "provider": "openai", "api_key": "key",
+                "model": "gpt-6-luna", "base_url": "https://api.openai.com/v1",
+                "prompt": "", "timeout": 5,
+            }, headers=auth())
+        self.assertEqual(r.status_code, 200)
+        payload = post.call_args[0][1]
+        self.assertEqual(payload["max_completion_tokens"], 1024)
+        self.assertNotIn("max_tokens", payload)
+        self.assertNotIn("temperature", payload)
+
+    def test_ai_check_custom_normalizes_url_and_skips_empty_auth(self):
+        fake = {"choices": [{"message": {"content": "OK"}}]}
+        with mock.patch.object(self.m, "_ai_post_json", return_value=fake) as post:
+            r = self.client.post("/api/ai/check", json={
+                "enabled": False, "provider": "custom", "api_key": "",
+                "model": "local-model",
+                "base_url": "http://127.0.0.1:11434/v1/chat/completions",
+                "prompt": "", "timeout": 5,
+            }, headers=auth())
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(post.call_args[0][0], "http://127.0.0.1:11434/v1/chat/completions")
+        self.assertNotIn("Authorization", post.call_args[0][2])
+        self.assertEqual(post.call_args[0][1]["max_tokens"], 1024)
+        self.assertNotIn("max_completion_tokens", post.call_args[0][1])
 
     def test_ai_check_uses_form_values_without_saving(self):
         old = self.m.CONFIG.get("ai")
