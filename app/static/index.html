@@ -7323,6 +7323,16 @@
       document.getElementById("aiBaseUrl").value = p.default_base_url || "";
     }
     async function openAiModal() {
+      try {
+        const lic = await fetch("api/license").then(r => r.json());
+        if (!lic.valid) {
+          await openLicenseModal();
+          const licSt = document.getElementById("licMsg");
+          licSt.style.color = "var(--err-text)";
+          licSt.textContent = "🔒 Cần kích hoạt license LiteNVR Pro để dùng mô tả sự kiện AI.";
+          return;
+        }
+      } catch (e) {}
       const st = document.getElementById("aiStatus");
       st.textContent = "";
       try {
