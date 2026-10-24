@@ -252,6 +252,7 @@ async def lifespan(app: FastAPI):
     threading.Thread(target=camera_offline_supervisor, daemon=True).start()
     threading.Thread(target=disk_alert_supervisor, daemon=True).start()
     threading.Thread(target=go2rtc_monitor, daemon=True).start()
+    threading.Thread(target=_license_worker, daemon=True).start()
     try:
         yield
     finally:
@@ -366,6 +367,15 @@ async def security_headers(request: Request, call_next):
         )
     return resp
 
+AI_PROVIDERS = {
+    "gemini": ("Google Gemini", "gemini-2.0-flash",
+               "https://generativelanguage.googleapis.com/v1beta"),
+    "openai": ("OpenAI / ChatGPT", "gpt-4o-mini", "https://api.openai.com/v1"),
+    "groq": ("Groq", "meta-llama/llama-4-scout-17b-16e-instruct",
+             "https://api.groq.com/openai/v1"),
+    "custom": ("OpenAI-compatible (custom)", "", ""),
+}
+
 DEFAULT_CONFIG = {
     "retention_days": 7,
     "max_storage_gb": 0,       # 0 = Không giới hạn theo GB
@@ -398,10 +408,39 @@ DEFAULT_CONFIG = {
         "webhook_url": "",
         "public_url": "",             # địa chỉ LiteNVR để tạo link xem lại trong tin nhắn
         "with_photo": True,
+        "telegram_clip": False,
+        "telegram_clip_sec": 8,
         "disk_alert_enabled": False,
         "disk_warn_percent": 85,
         "disk_crit_percent": 95,
         "camera_offline_alert": True
+    },
+    "license": {
+        "enforce": True,
+        "server_url": (os.environ.get("LITENVR_LICENSE_URL")
+                       or "https://litenvr-license.vercel.app").rstrip("/"),
+        "key": "",
+        "token": "",
+        "plan": "",
+        "expires_at": "",
+        "installation_id": "",
+        "last_check": 0,
+        "last_error": "",
+        "grace_days": 7,
+        "checked_version": ""
+    },
+    "ai": {
+        "enabled": False,
+        "provider": "gemini",
+        "api_key": "",
+        "model": "gemini-2.0-flash",
+        "base_url": "https://generativelanguage.googleapis.com/v1beta",
+        "prompt": (
+            "Mô tả ngắn gọn bằng tiếng Việt nội dung ảnh camera an ninh: người, "
+            "xe cộ, động vật, đồ vật, màu quần áo, hành động và hướng di chuyển "
+            "nếu thấy. Tối đa 60 từ, chỉ mô tả điều nhìn thấy, không suy đoán danh tính."
+        ),
+        "timeout": 30
     },
     "gdrive": {
         "enabled": False,
@@ -458,6 +497,26 @@ def _normalize_config(cfg: dict) -> dict:
     nt = cfg.setdefault("notify", {})
     for k, v in DEFAULT_CONFIG["notify"].items():
         nt.setdefault(k, v)
+    ai_cfg = cfg.setdefault("ai", {})
+    for k, v in DEFAULT_CONFIG["ai"].items():
+        ai_cfg.setdefault(k, v)
+    if str(ai_cfg.get("provider") or "").lower() not in AI_PROVIDERS:
+        ai_cfg["provider"] = "gemini"
+    try:
+        ai_cfg["timeout"] = max(5, min(120, int(ai_cfg.get("timeout") or 30)))
+    except (TypeError, ValueError):
+        ai_cfg["timeout"] = 30
+    ai_cfg["enabled"] = bool(ai_cfg.get("enabled"))
+    lic = cfg.setdefault("license", {})
+    for k, v in DEFAULT_CONFIG["license"].items():
+        lic.setdefault(k, v)
+    if not str(lic.get("installation_id") or "").strip():
+        lic["installation_id"] = secrets.token_hex(16)
+    lic["enforce"] = bool(lic.get("enforce", True))
+    try:
+        lic["grace_days"] = max(1, min(30, int(lic.get("grace_days") or 7)))
+    except (TypeError, ValueError):
+        lic["grace_days"] = 7
     cfg.pop("motion_detect", None)
     # Di trú: cảm biến chuyển động HA từ cấu hình chung sang từng camera.
     legacy_entities = ha.get("entities") or {}
@@ -552,14 +611,21 @@ def _hass_state_options(entity_id: str) -> list:
 
 def load_config():
     if not os.path.exists(CONFIG_PATH):
+        cfg = _normalize_config(json.loads(json.dumps(DEFAULT_CONFIG)))
         with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-            json.dump(DEFAULT_CONFIG, f, indent=2, ensure_ascii=False)
-        return json.loads(json.dumps(DEFAULT_CONFIG))
+            json.dump(cfg, f, indent=2, ensure_ascii=False)
+        return cfg
     try:
         with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-            return _normalize_config(json.load(f))
+            raw = json.load(f)
+        had_installation_id = bool((raw.get("license") or {}).get("installation_id"))
+        cfg = _normalize_config(raw)
+        if not had_installation_id:
+            with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+                json.dump(cfg, f, indent=2, ensure_ascii=False)
+        return cfg
     except Exception:
-        return json.loads(json.dumps(DEFAULT_CONFIG))
+        return _normalize_config(json.loads(json.dumps(DEFAULT_CONFIG)))
 
 _config_lock = threading.Lock()
 
@@ -608,6 +674,12 @@ def init_db():
     cols = {row[1] for row in c.execute("PRAGMA table_info(events)").fetchall()}
     if "starred" not in cols:
         c.execute("ALTER TABLE events ADD COLUMN starred INTEGER NOT NULL DEFAULT 0")
+    if "ai_description" not in cols:
+        c.execute("ALTER TABLE events ADD COLUMN ai_description TEXT")
+    if "ai_model" not in cols:
+        c.execute("ALTER TABLE events ADD COLUMN ai_model TEXT")
+    if "ai_ts" not in cols:
+        c.execute("ALTER TABLE events ADD COLUMN ai_ts INTEGER")
     c.execute("CREATE INDEX IF NOT EXISTS idx_events_starred ON events(starred, timestamp)")
     c.execute("""
         CREATE TABLE IF NOT EXISTS locks (
@@ -766,13 +838,16 @@ def verify_password(password: str, salt: str, expected_hash: str) -> bool:
 
 
 def mask_secrets(text: str) -> str:
-    """Che thông tin đăng nhập nhúng trong URL RTSP/HTTP."""
+    """Che thông tin đăng nhập nhúng trong URL RTSP/HTTP và API key."""
     text = re.sub(r"([a-zA-Z][a-zA-Z0-9+.-]*://)([^@/\s]+)@", r"\1***:***@", text or "")
-    return re.sub(
+    text = re.sub(
         r"([a-zA-Z][a-zA-Z0-9+.-]*://[^/\s]+/user:)[^;/\s]+(;pwd:)[^/\s?#]+",
         r"\1***\2***",
         text,
     )
+    text = re.sub(r"\b(Bearer\s+)[A-Za-z0-9._~+/=-]{12,}", r"\1***", text, flags=re.I)
+    return re.sub(r"\b(sk-[A-Za-z0-9_-]{12,}|gsk_[A-Za-z0-9_-]{12,}|AIza[0-9A-Za-z_-]{20,})\b",
+                  "***", text)
 
 
 def get_user(username: str) -> Optional[sqlite3.Row]:
@@ -1041,7 +1116,8 @@ def path_permission(request: Request) -> Optional[str]:
     if path.startswith("/api/users") or path.startswith("/api/config") or path.startswith("/api/storage") \
             or path.startswith("/api/hass") or path.startswith("/api/notify") or path.startswith("/api/logs") \
             or path.startswith("/api/system") or path.startswith("/api/onvif") or path.startswith("/api/audit") \
-            or path.startswith("/api/security") or path.startswith("/api/drive"):
+            or path.startswith("/api/security") or path.startswith("/api/drive") \
+            or path.startswith("/api/ai") or path.startswith("/api/license"):
         return "__admin__"
     if path.startswith("/api/cameras"):
         return "__admin__"  # POST/DELETE/bulk đổi cấu hình camera
@@ -3304,10 +3380,25 @@ class NotifySettings(BaseModel):
     webhook_url: str = ""
     public_url: str = ""
     with_photo: bool = True
+    telegram_clip: bool = False
+    telegram_clip_sec: int = 8
     disk_alert_enabled: bool = False
     disk_warn_percent: float = 85
     disk_crit_percent: float = 95
     camera_offline_alert: bool = True
+
+class AiSettings(BaseModel):
+    enabled: bool = False
+    provider: str = "gemini"
+    api_key: str = ""                # Để trống khi lưu = giữ key cũ
+    model: str = ""
+    base_url: str = ""
+    prompt: str = ""
+    timeout: int = 30
+
+class LicenseActivate(BaseModel):
+    key: str = ""
+    server_url: str = ""
 
 class PtzCmd(BaseModel):
     action: str                      # up|down|left|right|upleft|upright|downleft|downright|zoomin|zoomout|home|stop|preset
@@ -4011,6 +4102,292 @@ _notify_lock = threading.Lock()
 _disk_alert_state: Dict[str, Any] = {"level": "", "ts": 0.0}
 _disk_alert_lock = threading.Lock()
 
+def _ai_settings() -> dict:
+    ai_cfg = dict(DEFAULT_CONFIG["ai"])
+    ai_cfg.update(CONFIG.get("ai") or {})
+    provider = str(ai_cfg.get("provider") or "gemini").lower()
+    if provider not in AI_PROVIDERS:
+        provider = "gemini"
+    label, default_model, default_base = AI_PROVIDERS[provider]
+    ai_cfg["provider"] = provider
+    ai_cfg["api_key"] = str(ai_cfg.get("api_key") or "").strip()
+    ai_cfg["model"] = str(ai_cfg.get("model") or default_model).strip() or default_model
+    ai_cfg["base_url"] = (str(ai_cfg.get("base_url") or default_base).strip().rstrip("/"))
+    ai_cfg["prompt"] = str(ai_cfg.get("prompt") or DEFAULT_CONFIG["ai"]["prompt"]).strip()
+    try:
+        ai_cfg["timeout"] = max(5, min(120, int(ai_cfg.get("timeout") or 30)))
+    except (TypeError, ValueError):
+        ai_cfg["timeout"] = 30
+    return ai_cfg
+
+def _ai_post_json(url: str, payload: dict, headers: dict, timeout: int) -> dict:
+    req = urllib.request.Request(
+        url, data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        method="POST", headers={"Content-Type": "application/json", **headers})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            raw = response.read(512 * 1024)
+    except urllib.error.HTTPError as exc:
+        raw = exc.read(64 * 1024)
+        try:
+            body = json.loads(raw)
+            detail = body.get("error") if isinstance(body, dict) else body
+            if isinstance(detail, dict):
+                detail = detail.get("message") or detail.get("status") or detail
+            detail = str(detail or "").strip()
+        except Exception:
+            detail = raw.decode("utf-8", "replace").strip()
+        raise RuntimeError(f"HTTP {exc.code}: {mask_secrets(detail[:300])}") from None
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        raise RuntimeError(f"Không kết nối được endpoint AI: {mask_secrets(str(exc))}") from None
+    try:
+        data = json.loads(raw)
+    except Exception:
+        raise RuntimeError("Endpoint AI trả về dữ liệu không phải JSON") from None
+    if not isinstance(data, dict):
+        raise RuntimeError("Endpoint AI trả về dữ liệu không hợp lệ")
+    return data
+
+def _ai_describe_snapshot(image_path: str, ai_cfg: Optional[dict] = None) -> dict:
+    ai_cfg = ai_cfg or _ai_settings()
+    if not ai_cfg.get("enabled"):
+        raise RuntimeError("AI chưa được bật")
+    provider = ai_cfg["provider"]
+    if provider != "custom" and not ai_cfg.get("api_key"):
+        raise RuntimeError("Chưa nhập API key AI")
+    if not ai_cfg.get("model"):
+        raise RuntimeError("Chưa nhập model AI")
+    try:
+        with open(image_path, "rb") as source:
+            image = source.read(8 * 1024 * 1024 + 1)
+    except OSError as exc:
+        raise RuntimeError(f"Không đọc được ảnh snapshot: {exc}") from None
+    if not image:
+        raise RuntimeError("Ảnh snapshot rỗng")
+    if len(image) > 8 * 1024 * 1024:
+        raise RuntimeError("Ảnh snapshot vượt quá 8 MB")
+    b64 = base64.b64encode(image).decode("ascii")
+    prompt = ai_cfg["prompt"]
+    if provider == "gemini":
+        base = ai_cfg["base_url"] or AI_PROVIDERS["gemini"][2]
+        model = urllib.parse.quote(ai_cfg["model"], safe="")
+        url = f"{base}/models/{model}:generateContent"
+        data = _ai_post_json(url, {
+            "contents": [{"role": "user", "parts": [
+                {"text": prompt},
+                {"inline_data": {"mime_type": "image/jpeg", "data": b64}},
+            ]}],
+            "generationConfig": {"temperature": 0.2, "maxOutputTokens": 220},
+        }, {"x-goog-api-key": ai_cfg["api_key"]}, ai_cfg["timeout"])
+        parts = ((((data.get("candidates") or [{}])[0] or {}).get("content") or {})
+                 .get("parts") or [])
+        text = " ".join(str(p.get("text") or "") for p in parts if isinstance(p, dict))
+    else:
+        base = ai_cfg["base_url"]
+        parsed = urllib.parse.urlsplit(base)
+        if parsed.scheme not in ("http", "https") or not parsed.netloc:
+            raise RuntimeError("Base URL AI không hợp lệ")
+        data = _ai_post_json(f"{base}/chat/completions", {
+            "model": ai_cfg["model"],
+            "messages": [{"role": "user", "content": [
+                {"type": "text", "text": prompt},
+                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
+            ]}],
+            "temperature": 0.2,
+            "max_tokens": 220,
+        }, {"Authorization": f"Bearer {ai_cfg['api_key']}"}, ai_cfg["timeout"])
+        choices = data.get("choices") or []
+        message = ((choices[0] or {}).get("message") or {}) if choices else {}
+        text = message.get("content") or ""
+        if isinstance(text, list):
+            text = " ".join(str(p.get("text") or "") for p in text if isinstance(p, dict))
+    text = re.sub(r"\s+", " ", str(text or "")).strip()
+    if not text:
+        raise RuntimeError("AI không trả về mô tả")
+    return {"description": text[:1200], "model": ai_cfg["model"], "provider": provider}
+
+def _wait_for_snapshot(snapshot_path: str, timeout: float) -> str:
+    deadline = time.time() + max(0, timeout)
+    while time.time() < deadline:
+        if os.path.isfile(snapshot_path) and os.path.getsize(snapshot_path) > 0:
+            return snapshot_path
+        time.sleep(0.2)
+    return ""
+
+_license_lock = threading.Lock()
+_license_gate_warn_at = 0.0
+
+def _license_cfg() -> dict:
+    lic = dict(DEFAULT_CONFIG["license"])
+    lic.update(CONFIG.get("license") or {})
+    lic["server_url"] = str(lic.get("server_url") or "").strip().rstrip("/")
+    lic["key"] = str(lic.get("key") or "").strip()
+    return lic
+
+def _license_expiry() -> Optional[datetime]:
+    raw = str(_license_cfg().get("expires_at") or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+def _license_valid() -> bool:
+    lic = _license_cfg()
+    if not lic.get("enforce", True):
+        return True
+    if not lic.get("key") or not lic.get("token"):
+        return False
+    expiry = _license_expiry()
+    if expiry and expiry <= datetime.now(timezone.utc):
+        return False
+    last_check = float(lic.get("last_check") or 0)
+    grace = float(lic.get("grace_days") or 7) * 86400
+    if not last_check or time.time() - last_check > grace:
+        return False
+    return True
+
+def _license_gate(feature: str) -> bool:
+    global _license_gate_warn_at
+    if _license_valid():
+        return True
+    now = time.time()
+    if now - _license_gate_warn_at > 3600:
+        _license_gate_warn_at = now
+        log_event("warn", f"{feature} cần license LiteNVR Pro còn hiệu lực — vào Cài đặt → Bản quyền để kích hoạt")
+    return False
+
+def _license_server_call(action: str, payload: dict) -> dict:
+    lic = _license_cfg()
+    base = lic["server_url"]
+    parsed = urllib.parse.urlsplit(base)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        raise RuntimeError("License server URL không hợp lệ")
+    url = f"{base}/api/license/{action}"
+    req = urllib.request.Request(
+        url, data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        method="POST", headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as response:
+            raw = response.read(128 * 1024)
+    except urllib.error.HTTPError as exc:
+        raw = exc.read(32 * 1024)
+        try:
+            detail = json.loads(raw).get("error") or json.loads(raw).get("detail")
+        except Exception:
+            detail = raw.decode("utf-8", "replace").strip()
+        raise RuntimeError(str(detail or f"HTTP {exc.code}")) from None
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        raise RuntimeError(f"Không kết nối được license server: {exc}") from None
+    try:
+        data = json.loads(raw)
+    except Exception:
+        raise RuntimeError("License server trả về dữ liệu không hợp lệ") from None
+    if not isinstance(data, dict):
+        raise RuntimeError("License server trả về dữ liệu không hợp lệ")
+    return data
+
+def _license_apply(data: dict):
+    lic = CONFIG.setdefault("license", dict(DEFAULT_CONFIG["license"]))
+    lic["token"] = str(data.get("token") or "")
+    lic["plan"] = str(data.get("plan") or "")
+    lic["expires_at"] = str(data.get("expires_at") or "")
+    lic["last_check"] = int(time.time())
+    lic["last_error"] = ""
+    lic["checked_version"] = APP_VERSION
+    save_config(CONFIG)
+
+def _license_activate(key: str) -> dict:
+    key = key.strip()
+    if not key:
+        raise RuntimeError("Chưa nhập license key")
+    lic = _license_cfg()
+    data = _license_server_call("activate", {
+        "key": key,
+        "installation_id": lic["installation_id"],
+        "version": APP_VERSION,
+    })
+    if not data.get("valid"):
+        raise RuntimeError(str(data.get("error") or "License không hợp lệ"))
+    with _license_lock:
+        CONFIG.setdefault("license", dict(DEFAULT_CONFIG["license"]))["key"] = key
+        _license_apply(data)
+    log_event("info", f"Đã kích hoạt license {data.get('plan') or ''}".strip())
+    return data
+
+def _license_refresh(force: bool = False) -> bool:
+    lic = _license_cfg()
+    if not lic.get("key"):
+        return False
+    last_check = float(lic.get("last_check") or 0)
+    if not force and time.time() - last_check < 6 * 3600:
+        return _license_valid()
+    try:
+        data = _license_server_call("validate", {
+            "key": lic["key"],
+            "installation_id": lic["installation_id"],
+            "version": APP_VERSION,
+        })
+        if not data.get("valid"):
+            raise RuntimeError(str(data.get("error") or "License hết hạn"))
+        with _license_lock:
+            _license_apply(data)
+        return True
+    except Exception as exc:
+        current = CONFIG.setdefault("license", dict(DEFAULT_CONFIG["license"]))
+        current["last_error"] = mask_secrets(str(exc))
+        save_config(CONFIG)
+        return _license_valid()
+
+def _license_status() -> dict:
+    lic = _license_cfg()
+    with _license_lock:
+        cfg = _license_cfg()
+    valid = _license_valid()
+    reason = ""
+    if not valid:
+        if not cfg.get("enforce", True):
+            reason = ""
+        elif not cfg.get("key"):
+            reason = "Chưa kích hoạt license"
+        elif not cfg.get("token"):
+            reason = "Chưa có token license"
+        elif _license_expiry() and _license_expiry() <= datetime.now(timezone.utc):
+            reason = "License đã hết hạn"
+        elif float(cfg.get("last_check") or 0) and \
+                time.time() - float(cfg.get("last_check") or 0) > float(cfg.get("grace_days") or 7) * 86400:
+            reason = "Quá hạn kiểm tra license (ngoại tuyến quá lâu)"
+        else:
+            reason = "License không hợp lệ"
+    return {
+        "valid": valid,
+        "enforce": bool(cfg.get("enforce", True)),
+        "plan": cfg.get("plan", ""),
+        "expires_at": cfg.get("expires_at", ""),
+        "installation_id": cfg.get("installation_id", ""),
+        "server_url": cfg.get("server_url", ""),
+        "has_key": bool(cfg.get("key")),
+        "last_check": int(cfg.get("last_check") or 0),
+        "last_error": cfg.get("last_error", ""),
+        "grace_days": int(cfg.get("grace_days") or 7),
+        "reason": reason,
+    }
+
+def _license_worker():
+    if _shutdown.wait(20):
+        return
+    while not _shutdown.is_set():
+        try:
+            _license_refresh()
+        except Exception as exc:
+            log_event("warn", f"Kiểm tra license lỗi: {mask_secrets(str(exc))}")
+        if _shutdown.wait(6 * 3600):
+            return
+
 def _telegram_api(token: str, method: str) -> str:
     return f"https://api.telegram.org/bot{token}/{method}"
 
@@ -4048,13 +4425,70 @@ def _event_link(cam_id: str, when: datetime) -> str:
             f"&date={when.strftime('%Y-%m-%d')}&t={sec}")
 
 
-def notify_motion(cam_id: str, label: str, snapshot_path: str = ""):
-    """Gửi thông báo Telegram/webhook khi có chuyển động (chạy trong thread riêng).
-    Bỏ qua nếu sự kiện trước đó của cùng camera < 3 giây (tránh dội tin)."""
+def _telegram_send_video(token: str, chat_id: str, text: str, video_path: str):
+    if not (video_path and os.path.isfile(video_path)):
+        return
+    boundary = "----LiteNVR" + uuid.uuid4().hex
+    parts = []
+    for key, value in {"chat_id": chat_id, "caption": text, "supports_streaming": "true"}.items():
+        parts.append(
+            f"--{boundary}\r\nContent-Disposition: form-data; name=\"{key}\"\r\n\r\n"
+            f"{value}\r\n".encode())
+    with open(video_path, "rb") as source:
+        parts.append(
+            f"--{boundary}\r\nContent-Disposition: form-data; name=\"video\"; "
+            f"filename=\"clip.mp4\"\r\nContent-Type: video/mp4\r\n\r\n".encode()
+            + source.read() + b"\r\n")
+    parts.append(f"--{boundary}--\r\n".encode())
+    req = urllib.request.Request(
+        _telegram_api(token, "sendVideo"), data=b"".join(parts), method="POST",
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
+    with urllib.request.urlopen(req, timeout=60) as response:
+        return response.read(300).decode("utf-8", "replace")
+
+def _capture_event_clip(cam_id: str, seconds: int) -> str:
+    cam_info = CONFIG.get("cameras", {}).get(cam_id)
+    if not cam_info or not shutil.which("ffmpeg"):
+        return ""
+    seconds = max(3, min(20, int(seconds or 8)))
+    path = os.path.join("/dev/shm" if os.path.isdir("/dev/shm") else tempfile.gettempdir(),
+                        f"litenvr_clip_{uuid.uuid4().hex[:10]}.mp4")
+    proc = None
+    try:
+        _, url = cam_source_urls(cam_id, cam_info)
+        cmd = [*_ffmpeg_base_args(), "-y", *_input_args(url, cam_info), "-i", url,
+               "-t", str(seconds), "-an", "-c:v", "libx264", "-preset", "veryfast",
+               "-crf", "28", "-pix_fmt", "yuv420p", "-movflags", "+faststart", path]
+        proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        proc.wait(timeout=seconds + 25)
+        if proc.returncode or not os.path.isfile(path) or os.path.getsize(path) < 1024:
+            raise RuntimeError("ffmpeg không tạo được clip")
+        return path
+    except Exception as exc:
+        if os.path.isfile(path):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+        log_event("warn", f"Không tạo được clip Telegram: {mask_secrets(str(exc))}", cam_id)
+        return ""
+    finally:
+        if proc and proc.poll() is None:
+            _terminate_process(proc)
+
+def notify_motion(cam_id: str, label: str, snapshot_path: str = "",
+                  event_id: Optional[int] = None, event_ts: Optional[int] = None):
+    """Mô tả AI + gửi thông báo Telegram/webhook (chạy trong thread riêng)."""
     cfg = CONFIG.get("notify") or {}
-    tg_on = cfg.get("telegram_enabled") and cfg.get("telegram_token") and cfg.get("telegram_chat_id")
+    ai_cfg = _ai_settings()
+    tg_configured = bool(cfg.get("telegram_enabled") and cfg.get("telegram_token")
+                         and cfg.get("telegram_chat_id"))
+    needs_license = tg_configured or bool(ai_cfg.get("enabled"))
+    licensed = _license_gate("Thông báo Telegram/Mô tả AI") if needs_license else True
+    tg_on = bool(tg_configured and licensed)
     wh = (cfg.get("webhook_url") or "").strip()
-    if not tg_on and not wh:
+    ai_on = bool(ai_cfg.get("enabled") and licensed)
+    if not tg_on and not wh and not ai_on:
         return
     now = time.time()
     with _notify_lock:
@@ -4063,9 +4497,32 @@ def notify_motion(cam_id: str, label: str, snapshot_path: str = ""):
         _notify_last[cam_id] = now
 
     cam_name = (CONFIG.get("cameras", {}).get(cam_id) or {}).get("name", cam_id)
-    when = datetime.now()
+    when = datetime.fromtimestamp(event_ts) if event_ts else datetime.now()
     link = _event_link(cam_id, when)
+    need_snapshot = ai_on or (tg_on and cfg.get("with_photo", True))
+    photo = _wait_for_snapshot(snapshot_path, 5) if (snapshot_path and need_snapshot) else ""
+    description = ""
+    if ai_on:
+        path = photo or (snapshot_path if os.path.isfile(snapshot_path) else "")
+        if path:
+            try:
+                result = _ai_describe_snapshot(path, ai_cfg)
+                description = result["description"]
+                if event_id:
+                    conn = db_conn()
+                    conn.execute(
+                        "UPDATE events SET ai_description=?, ai_model=?, ai_ts=? WHERE id=?",
+                        (description, result["model"], int(time.time()), event_id))
+                    conn.commit()
+                log_event("info", f"Mô tả AI: {description}", cam_id)
+            except Exception as exc:
+                log_event("warn", f"Mô tả AI lỗi: {mask_secrets(str(exc))}", cam_id)
+        else:
+            log_event("warn", "Bỏ qua mô tả AI vì chưa có snapshot", cam_id)
+
     text = f"🚨 {cam_name}: {label} lúc {when.strftime('%H:%M:%S %d/%m/%Y')}"
+    if description:
+        text += f"\n{description}"
     if link:
         text += f"\n▶️ Xem lại: {link}"
 
@@ -4073,6 +4530,10 @@ def notify_motion(cam_id: str, label: str, snapshot_path: str = ""):
         try:
             payload = {"cam_id": cam_id, "name": cam_name, "label": label,
                        "time": when.isoformat(timespec="seconds")}
+            if event_id:
+                payload["event_id"] = event_id
+            if description:
+                payload["ai_description"] = description
             if link:
                 payload["link"] = link
             data = json.dumps(payload).encode()
@@ -4083,17 +4544,24 @@ def notify_motion(cam_id: str, label: str, snapshot_path: str = ""):
             log_event("warn", f"Webhook thông báo lỗi: {e}", cam_id)
 
     if tg_on:
-        photo = ""
-        if cfg.get("with_photo", True):
-            for _ in range(20):     # chờ ffmpeg chụp xong (tối đa ~4s)
-                if os.path.isfile(snapshot_path) and os.path.getsize(snapshot_path) > 0:
-                    photo = snapshot_path
-                    break
-                time.sleep(0.2)
+        clip = ""
+        tg_text = text[:1020] + ("…" if len(text) > 1020 else "")
         try:
-            _telegram_send(cfg["telegram_token"], str(cfg["telegram_chat_id"]), text, photo)
+            if cfg.get("telegram_clip") and cam_id in CONFIG.get("cameras", {}):
+                clip = _capture_event_clip(cam_id, int(cfg.get("telegram_clip_sec") or 8))
+            if clip:
+                _telegram_send_video(cfg["telegram_token"], str(cfg["telegram_chat_id"]), tg_text, clip)
+            else:
+                _telegram_send(cfg["telegram_token"], str(cfg["telegram_chat_id"]), tg_text,
+                               photo if cfg.get("with_photo", True) else "")
         except Exception as e:
             log_event("warn", f"Telegram thông báo lỗi: {e}", cam_id)
+        finally:
+            if clip and os.path.isfile(clip):
+                try:
+                    os.remove(clip)
+                except OSError:
+                    pass
 
 def send_alert(text: str):
     """Gửi cảnh báo hệ thống (ổ đĩa...) qua Telegram/webhook đã cấu hình."""
@@ -4380,8 +4848,9 @@ def handle_motion(cam_id: str, label: str, snap_url: str = ""):
     event_id = c.lastrowid
     if not snapshot_ready:
         _start_snapshot(cam_id, cam_info, snap_path, event_id)
+    notify_path = initial_path if initial_name else snap_path
     threading.Thread(target=notify_motion,
-                     args=(cam_id, label, initial_path if initial_name else ""), daemon=True).start()
+                     args=(cam_id, label, notify_path, event_id, ts), daemon=True).start()
     _mqtt_publish_snapshot_path(cam_id, initial_path if initial_name else "")
     return {
         "status": "ok",
@@ -5344,7 +5813,7 @@ def get_timeline(cam_id: str, date: str, source: str = "auto"):
     conn = db_conn()
     c = conn.cursor()
     c.execute(
-        "SELECT id, timestamp, time_str, label, snapshot FROM events WHERE cam_id=? AND date_str=? ORDER BY timestamp DESC",
+        "SELECT id, timestamp, time_str, label, snapshot, ai_description FROM events WHERE cam_id=? AND date_str=? ORDER BY timestamp DESC",
         (cam_id, date)
     )
     events = []
@@ -5359,7 +5828,8 @@ def get_timeline(cam_id: str, date: str, source: str = "auto"):
             "time": row[2],
             "sec_of_day": h * 3600 + m * 60 + s,
             "label": row[3],
-            "snapshot": f"snapshots/{row[4]}"
+            "snapshot": f"snapshots/{row[4]}",
+            "ai_description": row[5] or ""
         })
     return {
         "segments": segments,
@@ -5488,15 +5958,16 @@ def search_events(request: Request, cam_id: str = "", q: str = "",
         params.append(label)
     if q:
         like = f"%{q}%"
-        where += " AND (label LIKE ? OR cam_id LIKE ?)"
-        params.extend([like, like])
+        where += " AND (label LIKE ? OR cam_id LIKE ? OR ai_description LIKE ?)"
+        params.extend([like, like, like])
     if starred:
         where += " AND starred=1"
     conn = db_conn()
     total = conn.execute("SELECT COUNT(*) FROM events" + where, params).fetchone()[0]
     rows = conn.execute(
-        "SELECT id, cam_id, timestamp, date_str, time_str, label, snapshot, starred FROM events"
-        + where + " ORDER BY timestamp DESC LIMIT ? OFFSET ?", params + [limit, offset]).fetchall()
+        "SELECT id, cam_id, timestamp, date_str, time_str, label, snapshot, starred, ai_description "
+        "FROM events" + where + " ORDER BY timestamp DESC LIMIT ? OFFSET ?",
+        params + [limit, offset]).fetchall()
     cams = CONFIG.get("cameras", {})
     out = []
     for r in rows:
@@ -5514,6 +5985,7 @@ def search_events(request: Request, cam_id: str = "", q: str = "",
             "timestamp": r[2], "date": r[3], "time": t, "label": r[5],
             "sec_of_day": sec_of_day,
             "starred": bool(r[7]),
+            "ai_description": r[8] or "",
             "snapshot": f"snapshots/{snap}" if snap else "",
         })
     return {"events": out, "count": len(out), "total": total, "offset": offset, "limit": limit}
@@ -5570,6 +6042,8 @@ def get_notify_settings():
         "webhook_url": nt.get("webhook_url", ""),
         "public_url": nt.get("public_url", ""),
         "with_photo": bool(nt.get("with_photo", True)),
+        "telegram_clip": bool(nt.get("telegram_clip", False)),
+        "telegram_clip_sec": int(nt.get("telegram_clip_sec") or 8),
         "disk_alert_enabled": bool(nt.get("disk_alert_enabled", False)),
         "disk_warn_percent": float(nt.get("disk_warn_percent", 85) or 85),
         "disk_crit_percent": float(nt.get("disk_crit_percent", 95) or 95),
@@ -5586,6 +6060,8 @@ def update_notify_settings(settings: NotifySettings):
     nt["webhook_url"] = settings.webhook_url.strip()
     nt["public_url"] = settings.public_url.strip().rstrip("/")
     nt["with_photo"] = settings.with_photo
+    nt["telegram_clip"] = settings.telegram_clip
+    nt["telegram_clip_sec"] = max(3, min(20, int(settings.telegram_clip_sec or 8)))
     nt["disk_alert_enabled"] = settings.disk_alert_enabled
     nt["disk_warn_percent"] = float(settings.disk_warn_percent or 85)
     nt["disk_crit_percent"] = float(settings.disk_crit_percent or 95)
@@ -5599,12 +6075,15 @@ def test_notify():
     nt = CONFIG.get("notify") or {}
     results = {}
     if nt.get("telegram_enabled") and nt.get("telegram_token") and nt.get("telegram_chat_id"):
-        try:
-            _telegram_send(nt["telegram_token"], str(nt["telegram_chat_id"]),
-                           "✅ LiteNVR: thông báo thử nghiệm — cấu hình Telegram hoạt động!")
-            results["telegram"] = "ok"
-        except Exception as e:
-            results["telegram"] = f"lỗi: {e}"
+        if not _license_valid():
+            results["telegram"] = "lỗi: cần license còn hiệu lực"
+        else:
+            try:
+                _telegram_send(nt["telegram_token"], str(nt["telegram_chat_id"]),
+                               "✅ LiteNVR: thông báo thử nghiệm — cấu hình Telegram hoạt động!")
+                results["telegram"] = "ok"
+            except Exception as e:
+                results["telegram"] = f"lỗi: {e}"
     if (nt.get("webhook_url") or "").strip():
         try:
             req = urllib.request.Request(nt["webhook_url"].strip(), data=json.dumps(
@@ -5617,6 +6096,99 @@ def test_notify():
     if not results:
         raise HTTPException(status_code=400, detail="Chưa bật Telegram và chưa có Webhook URL")
     return {"status": "ok", "results": results}
+
+# ---------------- Mô tả sự kiện bằng AI ----------------
+@app.get("/api/ai")
+def get_ai_settings():
+    ai_cfg = _ai_settings()
+    return {
+        "enabled": bool(ai_cfg.get("enabled")),
+        "provider": ai_cfg["provider"],
+        "model": ai_cfg["model"],
+        "base_url": ai_cfg["base_url"],
+        "prompt": ai_cfg["prompt"],
+        "timeout": ai_cfg["timeout"],
+        "has_api_key": bool(ai_cfg.get("api_key")),
+        "providers": [
+            {"id": key, "label": value[0], "default_model": value[1],
+             "default_base_url": value[2]}
+            for key, value in AI_PROVIDERS.items()
+        ],
+    }
+
+@app.post("/api/ai")
+def update_ai_settings(settings: AiSettings):
+    provider = settings.provider.strip().lower()
+    if provider not in AI_PROVIDERS:
+        raise HTTPException(status_code=400, detail="Nhà cung cấp AI không hợp lệ")
+    _, default_model, default_base = AI_PROVIDERS[provider]
+    ai_cfg = CONFIG.setdefault("ai", dict(DEFAULT_CONFIG["ai"]))
+    ai_cfg["enabled"] = settings.enabled
+    ai_cfg["provider"] = provider
+    if settings.api_key.strip():
+        ai_cfg["api_key"] = settings.api_key.strip()
+    ai_cfg["model"] = settings.model.strip() or default_model
+    ai_cfg["base_url"] = (settings.base_url.strip().rstrip("/") or default_base)
+    ai_cfg["prompt"] = settings.prompt.strip() or DEFAULT_CONFIG["ai"]["prompt"]
+    ai_cfg["timeout"] = max(5, min(120, int(settings.timeout or 30)))
+    if not ai_cfg["model"]:
+        raise HTTPException(status_code=400, detail="Chưa nhập model AI")
+    if provider != "custom" and not ai_cfg.get("api_key"):
+        raise HTTPException(status_code=400, detail="Chưa nhập API key AI")
+    save_config(CONFIG)
+    log_event("info", f"Đã lưu cấu hình AI ({provider}/{ai_cfg['model']})")
+    return {"status": "ok"}
+
+@app.post("/api/ai/test")
+def test_ai():
+    if not _license_valid():
+        raise HTTPException(status_code=402, detail="Cần license LiteNVR Pro còn hiệu lực")
+    ai_cfg = _ai_settings()
+    if not ai_cfg.get("enabled"):
+        raise HTTPException(status_code=400, detail="Chưa bật mô tả AI")
+    snapshot_dir = SNAPSHOTS_DIR
+    candidates = []
+    try:
+        for name in os.listdir(snapshot_dir):
+            path = os.path.join(snapshot_dir, name)
+            if _valid_snapshot(path):
+                candidates.append((os.path.getmtime(path), path))
+    except OSError:
+        pass
+    if not candidates:
+        raise HTTPException(status_code=400, detail="Chưa có snapshot để kiểm tra AI")
+    path = max(candidates)[1]
+    try:
+        result = _ai_describe_snapshot(path, ai_cfg)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=mask_secrets(str(exc)))
+    return {"status": "ok", "result": result}
+
+# ---------------- Bản quyền LiteNVR Pro ----------------
+@app.get("/api/license")
+def get_license_status():
+    return _license_status()
+
+@app.post("/api/license")
+def activate_license(req: LicenseActivate):
+    if req.server_url.strip():
+        lic = CONFIG.setdefault("license", dict(DEFAULT_CONFIG["license"]))
+        lic["server_url"] = req.server_url.strip().rstrip("/")
+        save_config(CONFIG)
+    try:
+        _license_activate(req.key)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=mask_secrets(str(exc)))
+    return {"status": "ok", **_license_status()}
+
+@app.post("/api/license/refresh")
+def refresh_license():
+    if not _license_cfg().get("key"):
+        raise HTTPException(status_code=400, detail="Chưa kích hoạt license")
+    ok = _license_refresh(force=True)
+    if not ok:
+        raise HTTPException(status_code=402, detail=_license_status().get("reason") or "License không hợp lệ")
+    return {"status": "ok", **_license_status()}
 
 # ---------------- Sao lưu ra SMB/NFS/FTP ----------------
 class BackupSettings(BaseModel):

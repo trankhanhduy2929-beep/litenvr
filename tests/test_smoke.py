@@ -462,6 +462,72 @@ class ApiTests(_AppCase):
         self.assertEqual(j["public_url"], "http://192.168.5.63:9895")
         self.client.post("/api/notify", json={"disk_alert_enabled": False}, headers=auth())
 
+    def test_ai_settings_persist_without_exposing_key(self):
+        r = self.client.post("/api/ai", json={
+            "enabled": False, "provider": "openai", "api_key": "sk-test-secret",
+            "model": "gpt-4o-mini", "base_url": "https://api.openai.com/v1",
+            "prompt": "Mô tả thử", "timeout": 20,
+        }, headers=auth())
+        self.assertEqual(r.status_code, 200)
+        j = self.client.get("/api/ai", headers=auth()).json()
+        self.assertTrue(j["has_api_key"])
+        self.assertEqual(j["provider"], "openai")
+        self.assertEqual(j["model"], "gpt-4o-mini")
+        self.assertNotIn("api_key", j)
+        self.assertTrue(any(p["id"] == "gemini" for p in j["providers"]))
+
+    def test_ai_describe_snapshot_parses_gemini_response(self):
+        path = os.path.join(tempfile.mkdtemp(prefix="litenvr_ai_"), "snap.jpg")
+        with open(path, "wb") as f:
+            f.write(b"\xff\xd8\xff\xe0" + b"x" * 64)
+        cfg = {"enabled": True, "provider": "gemini", "api_key": "k", "model": "gemini-test",
+               "base_url": "https://gemini.test/v1beta", "prompt": "Mô tả", "timeout": 10}
+        fake = {"candidates": [{"content": {"parts": [{"text": "Người áo đỏ đi bộ."}]}}]}
+        with mock.patch.object(self.m, "_ai_post_json", return_value=fake) as post:
+            result = self.m._ai_describe_snapshot(path, cfg)
+        self.assertEqual(result["description"], "Người áo đỏ đi bộ.")
+        self.assertEqual(result["model"], "gemini-test")
+        self.assertTrue(post.called)
+
+    def test_license_status_and_activation_cache(self):
+        j = self.client.get("/api/license", headers=auth()).json()
+        self.assertFalse(j["valid"])
+        self.assertEqual(len(j["installation_id"]), 32)
+        old = dict(self.m.CONFIG.get("license") or {})
+        fake = {"valid": True, "token": "signed-token", "plan": "monthly",
+                "expires_at": (datetime.now().astimezone()).replace(year=datetime.now().year + 1).isoformat()}
+        try:
+            with mock.patch.object(self.m, "_license_server_call", return_value=fake):
+                self.m._license_activate("LITE-TEST-TEST-TEST")
+            self.assertTrue(self.m._license_valid())
+            status = self.client.get("/api/license", headers=auth()).json()
+            self.assertTrue(status["valid"])
+            self.assertEqual(status["plan"], "monthly")
+        finally:
+            self.m.CONFIG["license"] = old
+            self.m.save_config(self.m.CONFIG)
+
+    def test_events_search_includes_ai_description(self):
+        conn = self.m.db_conn()
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO events (cam_id, timestamp, date_str, time_str, label, snapshot, ai_description) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("cam1", int(time.time()), "2026-10-23", "12:00:00", "Chuyển động", None,
+             "Người áo đỏ chở xe tải nhỏ"),
+        )
+        conn.commit()
+        event_id = cur.lastrowid
+        try:
+            r = self.client.get("/api/events", params={"q": "áo đỏ"}, headers=auth())
+            self.assertEqual(r.status_code, 200)
+            data = r.json()
+            self.assertTrue(any(e["id"] == event_id and "áo đỏ" in e["ai_description"]
+                                for e in data["events"]))
+        finally:
+            conn.execute("DELETE FROM events WHERE id=?", (event_id,))
+            conn.commit()
+
     def test_backup_settings_persist(self):
         r = self.client.post("/api/backup", json={"enabled": True, "kind": "smb",
                                                   "smb_host": "nas.local", "smb_share": "Camera",

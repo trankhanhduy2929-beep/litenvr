@@ -1670,6 +1670,16 @@
 
     .event-card.no-img { min-height: 72px; }
     .event-card.no-img > div { padding-right: 34px; }
+    .evt-ai {
+      margin-top: 4px;
+      font-size: 11.5px;
+      line-height: 1.35;
+      color: var(--text-muted);
+      display: -webkit-box;
+      -webkit-line-clamp: 3;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
     .event-card img {
       width: 100%;
       height: 124px;
@@ -2533,12 +2543,14 @@
             <div class="menu-group-label">Kết nối</div>
             <button onclick="openHassModal()" data-admin>🛰️ Home Assistant</button>
             <button onclick="openNotifyModal()" data-admin>🔔 Thông báo</button>
+            <button onclick="openAiModal()" data-admin>Mô tả sự kiện AI</button>
           </div>
           <div class="menu-sep" role="presentation"></div>
           <div class="menu-group" role="presentation">
             <div class="menu-group-label">Hệ thống</div>
             <button onclick="showDiagnostics()" data-admin>🔍 Chẩn đoán</button>
             <button id="btnLogs" onclick="openLogsModal()" data-admin>📋 Nhật ký <span id="logBadge" class="log-badge" hidden>0</span></button>
+            <button onclick="openLicenseModal()" data-admin>Bản quyền</button>
             <button onclick="openSecModal()" title="Tài khoản, mật khẩu, 2FA &amp; nhật ký đăng nhập">🔐 Bảo mật</button>
           </div>
         </div>
@@ -2699,7 +2711,7 @@
   </div>
 
   <div id="evtSearchBar">
-    <input id="evtSearchQ" placeholder="🔎 Tìm sự kiện (nhãn, camera)…" oninput="debouncedEventSearch()">
+    <input id="evtSearchQ" placeholder="🔎 Tìm sự kiện (nhãn, camera, mô tả AI: người áo đỏ, xe tải…)…" oninput="debouncedEventSearch()">
     <button id="btnEvtFilters" type="button" onclick="toggleEvtFilters(event)" aria-expanded="false" aria-controls="evtFilters">⚙ Bộ lọc</button>
     <div class="evt-filters" id="evtFilters">
       <div class="evt-presets" role="group" aria-label="Lọc nhanh theo ngày">
@@ -3386,6 +3398,12 @@
         <input type="checkbox" id="ntPhoto"> Kèm ảnh snapshot khi báo động
       </label>
       <div class="form-row">
+        <label class="log-chk" style="font-size:13px; margin-bottom:4px;">
+          <input type="checkbox" id="ntClip"> Gửi kèm video ngắn (thay cho ảnh)
+        </label>
+        <input type="number" id="ntClipSec" min="3" max="20" step="1" value="8" title="Độ dài video (giây)">
+      </div>
+      <div class="form-row">
         <label>Webhook URL (tùy chọn - nhận POST JSON, dùng cho Node-RED/HASS/n8n):</label>
         <input id="ntWebhook" placeholder="http://...">
       </div>
@@ -3418,6 +3436,86 @@
         <div style="display:flex; gap:8px;">
           <button onclick="closeNotifyModal()">Đóng</button>
           <button class="primary" onclick="saveNotify()">Lưu</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal bản quyền -->
+  <div class="modal" id="licenseModal">
+    <div class="modal-box">
+      <h3 style="margin-top:0">Bản quyền LiteNVR Pro</h3>
+      <div id="licStatus" style="font-size:13px;line-height:1.6;margin-bottom:12px;"></div>
+      <div style="font-size:12px;color:var(--text-muted);line-height:1.55;margin-bottom:12px;">
+        Telegram và mô tả sự kiện AI cần license còn hiệu lực. Mua hoặc quản lý license tại
+        <a id="licPortalLink" href="https://litenvr-license.vercel.app" target="_blank" rel="noopener">trang bản quyền</a>.
+      </div>
+      <div class="form-row">
+        <label>Mã cài đặt (đọc cho nhân viên hỗ trợ khi cần chuyển máy):</label>
+        <input id="licInstallId" readonly>
+      </div>
+      <div class="form-row">
+        <label>License server URL:</label>
+        <input id="licServerUrl" placeholder="https://litenvr-license.vercel.app">
+      </div>
+      <div class="form-row">
+        <label>License key:</label>
+        <input id="licKey" placeholder="LITE-XXXX-XXXX-XXXX">
+      </div>
+      <div id="licMsg" style="font-size:12px;color:var(--text-muted);margin:6px 0 12px;"></div>
+      <div style="display:flex; gap:8px; justify-content:space-between; margin-top:14px;">
+        <button class="warn" onclick="refreshLicense()">🔄 Kiểm tra lại</button>
+        <div style="display:flex; gap:8px;">
+          <button onclick="closeLicenseModal()">Đóng</button>
+          <button class="primary" onclick="activateLicense()">Kích hoạt</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal mô tả sự kiện bằng AI -->
+  <div class="modal" id="aiModal">
+    <div class="modal-box">
+      <h3 style="margin-top:0">Mô tả sự kiện bằng AI</h3>
+      <div style="font-size:12px;color:var(--text-muted);line-height:1.55;margin-bottom:12px;">
+        Mỗi snapshot chuyển động được gửi tới nhà cung cấp AI để tạo mô tả tiếng Việt.
+        Mô tả hiển thị dưới ảnh sự kiện, trong Telegram và có thể tìm bằng từ khoá
+        như “người áo đỏ”, “xe tải”.
+      </div>
+      <label class="log-chk" style="font-size:13px; margin-bottom:10px;">
+        <input type="checkbox" id="aiEnabled"> Bật mô tả AI cho sự kiện mới
+      </label>
+      <div class="form-row">
+        <label>Nhà cung cấp:</label>
+        <select id="aiProvider" onchange="aiProviderChanged()"></select>
+      </div>
+      <div class="form-row">
+        <label>Model:</label>
+        <input id="aiModel" placeholder="gemini-2.0-flash">
+      </div>
+      <div class="form-row">
+        <label>Base URL (tự điền theo nhà cung cấp, sửa được cho custom):</label>
+        <input id="aiBaseUrl" placeholder="https://...">
+      </div>
+      <div class="form-row">
+        <label>API key:</label>
+        <input type="password" id="aiApiKey" placeholder="Dán API key...">
+      </div>
+      <div id="aiKeyHint" style="font-size:12px;color:var(--ok-text);margin:-6px 0 10px;"></div>
+      <div class="form-row">
+        <label>Prompt mô tả:</label>
+        <textarea id="aiPrompt" rows="4" style="resize:vertical;"></textarea>
+      </div>
+      <div class="form-row">
+        <label>Timeout (giây):</label>
+        <input type="number" id="aiTimeout" min="5" max="120" step="1" value="30">
+      </div>
+      <div id="aiStatus" style="font-size:12px;color:var(--text-muted);margin:6px 0 12px;"></div>
+      <div style="display:flex; gap:8px; justify-content:space-between; margin-top:14px;">
+        <button class="warn" onclick="testAi()">Thử với snapshot mới nhất</button>
+        <div style="display:flex; gap:8px;">
+          <button onclick="closeAiModal()">Đóng</button>
+          <button class="primary" onclick="saveAi()">Lưu</button>
         </div>
       </div>
     </div>
@@ -6042,7 +6140,8 @@
       card.setAttribute("aria-label", `Sự kiện ${e.time || ""} ${e.label || ""} camera ${camName}`);
       card.innerHTML = `${e.snapshot ? `<img src="${esc(e.snapshot)}" loading="lazy" decoding="async" alt="Ảnh sự kiện ${esc(e.time || "")}" onerror="this.style.display='none'">` : ""}
         <button class="evt-star" title="Đánh dấu sự kiện" aria-pressed="${e.starred ? "true" : "false"}">${e.starred ? "★" : "☆"}</button>
-        <div style="margin-top:8px;font-size:13px;"><b>${esc(e.date || date || "")} ${esc(e.time || "")}</b><br>${esc(e.label || "")}</div>`;
+        <div style="margin-top:8px;font-size:13px;"><b>${esc(e.date || date || "")} ${esc(e.time || "")}</b><br>${esc(e.label || "")}</div>
+        ${e.ai_description ? `<div class="evt-ai">${esc(e.ai_description)}</div>` : ""}`;
       card.onclick = () => showEventDetail(e, camId, date);
       card.onkeydown = (ev) => {
         if (ev.key !== "Enter" && ev.key !== " ") return;
@@ -6092,6 +6191,7 @@
         `<span><b>Ngày:</b> ${esc(evtDateText(day))}</span>` +
         `<span><b>Giờ:</b> ${esc(e.time || "")}</span>` +
         `<span><b>Nhãn:</b> ${esc(e.label || "Chuyển động")}</span>` +
+        (e.ai_description ? `<span style="flex-basis:100%"><b>AI:</b> ${esc(e.ai_description)}</span>` : "") +
         (e.id ? `<span><b>Mã:</b> #${esc(e.id)}</span>` : "");
       document.getElementById("evtModal").classList.add("open");
     }
@@ -7036,6 +7136,8 @@
       document.getElementById("ntToken").value = "";
       document.getElementById("ntTokenHint").textContent = cfg.has_telegram_token ? "✔ Đã lưu token (để trống khi lưu = giữ nguyên)" : "";
       document.getElementById("ntPhoto").checked = cfg.with_photo !== false;
+      document.getElementById("ntClip").checked = !!cfg.telegram_clip;
+      document.getElementById("ntClipSec").value = cfg.telegram_clip_sec || 8;
       document.getElementById("ntWebhook").value = cfg.webhook_url || "";
       document.getElementById("ntPublicUrl").value = cfg.public_url || "";
       document.getElementById("ntCamOffline").checked = cfg.camera_offline_alert !== false;
@@ -7074,6 +7176,8 @@
         webhook_url: document.getElementById("ntWebhook").value.trim(),
         public_url: document.getElementById("ntPublicUrl").value.trim(),
         with_photo: document.getElementById("ntPhoto").checked,
+        telegram_clip: document.getElementById("ntClip").checked,
+        telegram_clip_sec: parseInt(document.getElementById("ntClipSec").value) || 8,
         camera_offline_alert: document.getElementById("ntCamOffline").checked,
         disk_alert_enabled: document.getElementById("ntDiskAlert").checked,
         disk_warn_percent: parseFloat(document.getElementById("ntDiskWarn").value) || 85,
@@ -7093,6 +7197,131 @@
         const d = await r.json();
         st.style.color = r.ok ? "var(--ok-text)" : "var(--err-text)";
         st.textContent = r.ok ? "✔ " + JSON.stringify(d.results) : "❌ " + (d.detail || r.status);
+      } catch (e) {
+        st.style.color = "var(--err-text)";
+        st.textContent = "❌ " + e;
+      }
+    }
+
+    // ================= Bản quyền =================
+    function licExpiryText(value) {
+      if (!value) return "—";
+      const d = new Date(value);
+      return isNaN(d.getTime()) ? value : d.toLocaleString("vi-VN");
+    }
+    async function openLicenseModal() {
+      const st = document.getElementById("licMsg");
+      st.textContent = "";
+      try {
+        const lic = await fetch("api/license").then(r => r.json());
+        const el = document.getElementById("licStatus");
+        const cls = lic.valid ? "var(--ok-text)" : "var(--err-text)";
+        el.innerHTML = `<div style="color:${cls};font-weight:600;">${lic.valid ? "✔ License đang hoạt động" : "❌ " + esc(lic.reason || "Chưa kích hoạt")}</div>`
+          + `<div>Gói: <b>${esc(lic.plan || "—")}</b> · Hết hạn: <b>${esc(licExpiryText(lic.expires_at))}</b></div>`
+          + `<div>Kiểm tra gần nhất: ${esc(lic.last_check ? new Date(lic.last_check * 1000).toLocaleString("vi-VN") : "—")} · Dự phòng ngoại tuyến: ${esc(lic.grace_days)} ngày</div>`
+          + (lic.last_error ? `<div style="color:var(--err-text)">Lỗi gần nhất: ${esc(lic.last_error)}</div>` : "");
+        document.getElementById("licInstallId").value = lic.installation_id || "";
+        document.getElementById("licServerUrl").value = lic.server_url || "";
+        document.getElementById("licKey").value = "";
+        const portal = document.getElementById("licPortalLink");
+        if (lic.server_url) {
+          portal.href = lic.server_url;
+          portal.textContent = lic.server_url;
+        }
+      } catch (e) {}
+      document.getElementById("licenseModal").classList.add("open");
+    }
+    function closeLicenseModal() { document.getElementById("licenseModal").classList.remove("open"); }
+    async function activateLicense() {
+      const st = document.getElementById("licMsg");
+      const key = document.getElementById("licKey").value.trim();
+      if (!key) { st.style.color = "var(--err-text)"; st.textContent = "❌ Nhập license key."; return; }
+      st.style.color = "var(--text-muted)";
+      st.textContent = "⏳ Đang kích hoạt...";
+      const r = await fetch("api/license", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key, server_url: document.getElementById("licServerUrl").value.trim() })
+      });
+      const d = await r.json().catch(() => ({}));
+      st.style.color = r.ok ? "var(--ok-text)" : "var(--err-text)";
+      st.textContent = r.ok ? "✔ Kích hoạt thành công." : "❌ " + (d.detail || r.status);
+      if (r.ok) setTimeout(openLicenseModal, 500);
+    }
+    async function refreshLicense() {
+      const st = document.getElementById("licMsg");
+      st.style.color = "var(--text-muted)";
+      st.textContent = "⏳ Đang kiểm tra...";
+      const r = await fetch("api/license/refresh", { method: "POST" });
+      const d = await r.json().catch(() => ({}));
+      st.style.color = r.ok ? "var(--ok-text)" : "var(--err-text)";
+      st.textContent = r.ok ? "✔ License hợp lệ." : "❌ " + (d.detail || r.status);
+      if (r.ok) setTimeout(openLicenseModal, 500);
+    }
+
+    // ================= Mô tả sự kiện bằng AI =================
+    let _aiProviders = [];
+    function aiProviderChanged() {
+      const id = document.getElementById("aiProvider").value;
+      const p = _aiProviders.find(x => x.id === id);
+      if (!p) return;
+      document.getElementById("aiModel").value = p.default_model || "";
+      document.getElementById("aiBaseUrl").value = p.default_base_url || "";
+    }
+    async function openAiModal() {
+      const st = document.getElementById("aiStatus");
+      st.textContent = "";
+      try {
+        const cfg = await fetch("api/ai").then(r => r.json());
+        _aiProviders = cfg.providers || [];
+        const sel = document.getElementById("aiProvider");
+        sel.innerHTML = "";
+        _aiProviders.forEach(p => {
+          const opt = document.createElement("option");
+          opt.value = p.id;
+          opt.textContent = p.label;
+          sel.appendChild(opt);
+        });
+        sel.value = cfg.provider || "gemini";
+        document.getElementById("aiEnabled").checked = !!cfg.enabled;
+        document.getElementById("aiModel").value = cfg.model || "";
+        document.getElementById("aiBaseUrl").value = cfg.base_url || "";
+        document.getElementById("aiApiKey").value = "";
+        document.getElementById("aiPrompt").value = cfg.prompt || "";
+        document.getElementById("aiTimeout").value = cfg.timeout || 30;
+        document.getElementById("aiKeyHint").textContent = cfg.has_api_key
+          ? "✔ Đã lưu API key (để trống khi lưu = giữ nguyên)" : "";
+      } catch (e) {
+        st.style.color = "var(--err-text)";
+        st.textContent = "❌ Không tải được cấu hình AI.";
+      }
+      document.getElementById("aiModal").classList.add("open");
+    }
+    function closeAiModal() { document.getElementById("aiModal").classList.remove("open"); }
+    async function saveAi() {
+      const st = document.getElementById("aiStatus");
+      const payload = {
+        enabled: document.getElementById("aiEnabled").checked,
+        provider: document.getElementById("aiProvider").value,
+        api_key: document.getElementById("aiApiKey").value.trim(),
+        model: document.getElementById("aiModel").value.trim(),
+        base_url: document.getElementById("aiBaseUrl").value.trim(),
+        prompt: document.getElementById("aiPrompt").value.trim(),
+        timeout: parseInt(document.getElementById("aiTimeout").value) || 30
+      };
+      const r = await fetch("api/ai", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+      const d = await r.json().catch(() => ({}));
+      st.style.color = r.ok ? "var(--ok-text)" : "var(--err-text)";
+      st.textContent = r.ok ? "✔ Đã lưu cấu hình AI." : "❌ " + (d.detail || r.status);
+    }
+    async function testAi() {
+      const st = document.getElementById("aiStatus");
+      st.style.color = "var(--text-muted)";
+      st.textContent = "⏳ Đang gửi snapshot mới nhất tới AI...";
+      try {
+        const r = await fetch("api/ai/test", { method: "POST" });
+        const d = await r.json();
+        st.style.color = r.ok ? "var(--ok-text)" : "var(--err-text)";
+        st.textContent = r.ok ? "✔ " + d.result.description : "❌ " + (d.detail || r.status);
       } catch (e) {
         st.style.color = "var(--err-text)";
         st.textContent = "❌ " + e;
@@ -7579,7 +7808,7 @@
       const closers = {
         camModal: closeCamModal, storageModal: closeStorageModal, logsModal: closeLogsModal,
         statsModal: closeStatsModal,
-        hassModal: closeHassModal, notifyModal: closeNotifyModal, secModal: closeSecModal,
+        hassModal: closeHassModal, notifyModal: closeNotifyModal, aiModal: closeAiModal, licenseModal: closeLicenseModal, secModal: closeSecModal,
         backupModal: closeBackupModal,
         driveModal: closeDriveModal,
         evtModal: closeEvtModal

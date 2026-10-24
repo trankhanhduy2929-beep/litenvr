@@ -97,6 +97,27 @@ POST /api/ai/detect
 - `label` (tuỳ chọn): ghi đè nhãn.
 Sự kiện AI đi đúng luồng cũ: kích hoạt ghi hình, lưu vào danh sách sự kiện (tìm kiếm được theo nhãn/camera/ngày) và gửi thông báo (Telegram/webhook) nếu đã bật. Endpoint dùng chung quyền `live` nên client HTTP Basic (script/HA/Frigate) gọi được.
 
+## Mô tả sự kiện bằng AI (Gemini / OpenAI / Groq / custom)
+
+Mở **Cài đặt → Mô tả sự kiện AI**, bật tính năng rồi chọn nhà cung cấp:
+- **Google Gemini** (mặc định `gemini-2.0-flash`)
+- **OpenAI / ChatGPT** (mặc định `gpt-4o-mini`)
+- **Groq** (mặc định `meta-llama/llama-4-scout-17b-16e-instruct`)
+- **OpenAI-compatible custom** (Ollama, LM Studio, proxy nội bộ…)
+
+Dán API key, model và base URL nếu cần. Mỗi snapshot chuyển động được gửi tới AI để tạo
+mô tả tiếng Việt (người, xe, màu áo, hành động…). Mô tả hiện dưới ảnh sự kiện, trong
+chi tiết, trong Telegram/webhook và **tìm được bằng ô tìm kiếm sự kiện**. Nút
+**Thử với snapshot mới nhất** kiểm tra cấu hình. Ảnh gửi tối đa 8 MB.
+
+Tính năng AI và thông báo Telegram cần **license LiteNVR Pro** còn hiệu lực. Webhook
+JSON vẫn miễn phí. Vào **Cài đặt → Bản quyền** để nhập server URL và license key;
+addon kiểm tra lại mỗi 6 giờ và cho phép dùng ngoại tuyến tối đa 7 ngày.
+
+Mã nguồn trang bán/kích hoạt license (Next.js + Cloudflare D1, deploy Vercel + Workers) nằm trong
+[`license-portal/`](license-portal/) — xem hướng dẫn tại
+[`license-portal/DEPLOY.md`](license-portal/DEPLOY.md).
+
 ## Xem Live / Bản ghi bị đen hoặc không phát
 Nguyên nhân phổ biến: camera dùng **H.265/HEVC** — trình duyệt (Chrome/Edge/Firefox) không giải mã được.
 - Mặc định LiteNVR dùng **Tự động phát hiện**: tự dò codec camera/bản ghi bằng `ffprobe`; nếu là H.265/HEVC, H.264 10-bit hoặc 4:2:2/4:4:4 sẽ tự chuyển sang H.264 8-bit cho Live (HLS) và khi phát bản ghi.
@@ -175,7 +196,7 @@ Nguyên nhân phổ biến: camera dùng **H.265/HEVC** — trình duyệt (Chro
 - **⬇️ Xuất clip**: chọn *Từ giờ → Đến giờ* dưới thanh thời gian rồi bấm **Tải đoạn** để tải một file MP4 gồm toàn bộ các đoạn ghi trong khoảng đó. Nút **⬇️** trên mỗi sự kiện tải nhanh clip quanh sự kiện (mặc định 10s trước + 60s sau). Bật **chuyển H.264** nếu muốn gửi clip cho thiết bị/tài khoản không phát được H.265.
 - **📅 Lịch ghi hình**: trong phần sửa camera, bật **Lịch ghi hình** và thêm các khung giờ (Thứ, Từ, Đến, chế độ 24/7 hay Motion). Ngoài mọi khung giờ, camera **không ghi** (vẫn xem live được). Hỗ trợ khung giờ qua đêm (VD 22:00 → 06:00). Ví dụ: ngày thường chỉ Motion 8h–17h, ban đêm 24/7.
 - **🎮 PTZ (ONVIF)**: bấm **🎮 PTZ** để hiện bàn điều hướng xoay/zoom (dùng tài khoản trong URL RTSP; camera cần hỗ trợ ONVIF). Chọn preset có sẵn trong danh sách và bấm **📍 Đến preset**. Nếu camera dùng cổng ONVIF khác 80, thêm `onvif_port` trong `config.json`.
-- **🔔 Thông báo Telegram/Webhook**: bấm **🔔 Thông báo**, dán **Bot Token** (tạo bot qua @BotFather), **Chat ID** và bật thông báo — mỗi khi có chuyển động, LiteNVR gửi tin kèm **ảnh snapshot** (tuỳ chọn). Ô **Webhook URL** cho phép đẩy JSON sang Node-RED/HA/n8n. Nút **📨 Gửi thử** để kiểm tra; tin nhắn giới hạn 1 tin/3 giây mỗi camera để tránh dội. Điền **Địa chỉ LiteNVR** (VD `http://192.168.5.63:9895`) để tin nhắn/webhook kèm **link ▶️ Xem lại** mở đúng camera + thời điểm sự kiện (giao diện tự đọc `?cam=&date=&t=`).
+- **Thông báo Telegram/Webhook**: bấm **Thông báo**, dán **Bot Token** (tạo bot qua @BotFather), **Chat ID** và bật thông báo — mỗi khi có chuyển động, LiteNVR gửi tin kèm **ảnh snapshot** hoặc **video ngắn** (tuỳ chọn) và mô tả AI nếu đã bật. Ô **Webhook URL** cho phép đẩy JSON sang Node-RED/HA/n8n (miễn phí). Nút **Gửi thử** để kiểm tra; tin nhắn giới hạn 1 tin/3 giây mỗi camera để tránh dội. Điền **Địa chỉ LiteNVR** (VD `http://192.168.5.63:9895`) để tin nhắn/webhook kèm **link Xem lại** mở đúng camera + thời điểm sự kiện (giao diện tự đọc `?cam=&date=&t=`). Telegram cần license Pro còn hiệu lực.
 - **💾 Sao lưu / Khôi phục cấu hình**: trong **⚙️ Lưu trữ**, bấm **Xuất cấu hình** để tải file JSON (camera, lịch, HA, thông báo) và **Nhập cấu hình** để khôi phục sau khi chạy container mới / khôi phục nguyên trạng.
 - **📱 Tối ưu điện thoại / máy tính bảng**: giao diện tự gọn thanh công cụ thành nút **☰** trên màn hình nhỏ, modal mở toàn màn hình, nút/ô nhập đủ lớn cho cảm ứng (ô nhập ≥16px, chống iOS tự phóng to), timeline cao hơn để kéo tua dễ hơn.
 
